@@ -13,7 +13,6 @@ Tracking papers I've read, am implementing, or plan to implement.
 
 | Status | Paper | Authors | Year | Topic |
 |--------|-------|---------|------|-------|
-| 📋 | Attention Is All You Need | Vaswani et al. | 2017 | Transformers |
 | 📋 | Deep Residual Learning for Image Recognition | He et al. | 2015 | ResNet |
 | 📋 | Auto-Encoding Variational Bayes | Kingma & Welling | 2013 | VAE |
 | 📋 | Generative Adversarial Networks | Goodfellow et al. | 2014 | GAN |
@@ -24,4 +23,6 @@ Tracking papers I've read, am implementing, or plan to implement.
 
 ## Completed
 
-*None yet — first implementation coming soon!*
+| Status | Paper | Authors | Year | Topic | Notes |
+|--------|-------|---------|------|-------|-------|
+| ✅ | Attention Is All You Need | Vaswani et al. | 2017 | Transformers | Full encoder–decoder, verified on toy reversal task (2026-09-07) |

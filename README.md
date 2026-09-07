@@ -10,7 +10,7 @@ Each folder in `papers/` contains a clean, well-commented implementation of a la
 
 | # | Paper | Year | Topic | Folder |
 |---|-------|------|-------|--------|
-| - | *coming soon* | - | - | - |
+| 1 | [Attention Is All You Need](papers/attention-is-all-you-need) | 2017 | Transformers | `papers/attention-is-all-you-need/` |
 
 ---
 

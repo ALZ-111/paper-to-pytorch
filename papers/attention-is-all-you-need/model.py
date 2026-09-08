@@ -307,13 +307,13 @@ class Transformer(nn.Module):
         d_ff=2048,
         dropout=0.1,
         pad_idx=0,
+        tie_weights=False,
     ):
         super().__init__()
         self.pad_idx = pad_idx
         self.encoder = Encoder(src_vocab_size, d_model, n_layers, n_heads, d_ff, dropout)
         self.decoder = Decoder(tgt_vocab_size, d_model, n_layers, n_heads, d_ff, dropout)
-        # Projects decoder states to vocabulary logits. The paper ties this weight
-        # with the target embedding (Section 3.4); left untied here for clarity.
+        # Projects decoder states to vocabulary logits.
         self.generator = nn.Linear(d_model, tgt_vocab_size)
 
         # Xavier init (as in the reference implementation) keeps the variance of
@@ -321,6 +321,12 @@ class Transformer(nn.Module):
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
+
+        # Section 3.4: share the target embedding matrix with the output projection.
+        # Both map between token identity and d_model space, so sharing them cuts
+        # parameters and regularises the model on small datasets.
+        if tie_weights:
+            self.generator.weight = self.decoder.embed.weight
 
     def encode(self, src):
         src_mask = make_pad_mask(src, self.pad_idx)
@@ -357,6 +363,57 @@ class Transformer(nn.Module):
             if finished.all():
                 break
         return ys
+
+    @torch.no_grad()
+    def beam_search(self, src, bos_idx, eos_idx, beam_size=4, max_len=64, length_penalty=0.6):
+        """Beam search decoding for a single source sentence (Section 6.1 of the paper
+        uses beam 4 and length penalty alpha = 0.6).
+
+        Keeps the `beam_size` most probable partial sequences at each step instead of
+        only the single best (greedy). Finished hypotheses are scored by
+        log_prob / ((5 + len) / 6) ** alpha, which stops the search from favouring
+        short outputs.
+
+        src: (1, S) -> list of token ids (including BOS, ending with EOS if produced)
+        """
+        assert src.size(0) == 1, "beam_search decodes one sentence at a time"
+        self.eval()
+        memory, src_mask = self.encode(src)
+        memory = memory.expand(beam_size, -1, -1)
+        src_mask = src_mask.expand(beam_size, -1, -1, -1)
+
+        beams = torch.full((1, 1), bos_idx, dtype=torch.long, device=src.device)
+        scores = torch.zeros(1, device=src.device)
+        finished = []
+
+        for step in range(max_len - 1):
+            k = beams.size(0)
+            out = self.decode(beams, memory[:k], src_mask[:k])
+            log_probs = F.log_softmax(self.generator(out[:, -1]), dim=-1)  # (k, V)
+            vocab = log_probs.size(-1)
+
+            # Every (beam, next-token) pair is a candidate; pick the top beam_size overall.
+            cand = (scores.unsqueeze(1) + log_probs).view(-1)
+            top_scores, top_idx = cand.topk(min(beam_size, cand.numel()))
+            beam_idx, tok_idx = top_idx // vocab, top_idx % vocab
+            beams = torch.cat([beams[beam_idx], tok_idx.unsqueeze(1)], dim=1)
+            scores = top_scores
+
+            # Move finished hypotheses out of the active set.
+            is_eos = tok_idx == eos_idx
+            for i in torch.nonzero(is_eos).flatten().tolist():
+                lp = ((5 + beams.size(1)) / 6) ** length_penalty
+                finished.append((scores[i].item() / lp, beams[i].tolist()))
+            keep = ~is_eos
+            beams, scores = beams[keep], scores[keep]
+            if beams.size(0) == 0 or len(finished) >= beam_size:
+                break
+
+        # If nothing finished, fall back to the best unfinished beam.
+        if not finished:
+            lp = ((5 + beams.size(1)) / 6) ** length_penalty
+            finished = [(scores[i].item() / lp, beams[i].tolist()) for i in range(beams.size(0))]
+        return max(finished, key=lambda x: x[0])[1]
 
 
 if __name__ == "__main__":

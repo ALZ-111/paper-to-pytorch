@@ -10,12 +10,16 @@ architecture, masking and shifted-target loss are wired correctly.
 Run:  python train.py
 """
 
+import os
 import time
 
 import torch
 import torch.nn as nn
 
 from model import Transformer
+
+CKPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
+CKPT_PATH = os.path.join(CKPT_DIR, "toy_reverse.pt")
 
 PAD, BOS, EOS = 0, 1, 2
 VOCAB = 20          # tokens 3..19 are "content" tokens
@@ -105,7 +109,18 @@ if __name__ == "__main__":
 
     train(model, device)
 
+    # Persist the learned weights. state_dict() is just a dict of tensors keyed by
+    # parameter name; the architecture itself (model.py) is not stored, so loading
+    # requires constructing the same Transformer(...) first.
+    os.makedirs(CKPT_DIR, exist_ok=True)
+    torch.save(model.state_dict(), CKPT_PATH)
+    print(f"saved weights to {CKPT_PATH}")
+
+    # Prove the round trip works: build a fresh model, load the weights, decode.
+    restored = Transformer(VOCAB, VOCAB, d_model=128, n_layers=2, n_heads=4, d_ff=512, dropout=0.1)
+    restored.load_state_dict(torch.load(CKPT_PATH, map_location=device))
+    restored.to(device)
     src, _, _ = make_batch(3, device)
-    out = model.greedy_decode(src, BOS, EOS, max_len=SEQ_LEN + 2)
+    out = restored.greedy_decode(src, BOS, EOS, max_len=SEQ_LEN + 2)
     for s, o in zip(src.tolist(), out.tolist()):
         print(f"src {s}\n -> {o[1:]}")

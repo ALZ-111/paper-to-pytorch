@@ -199,5 +199,57 @@
     }
   ],
   "best_val_bleu_greedy": 41.127006723328975,
-  "test_bleu_greedy": 40.52669720277611
+  "test_bleu_greedy": 40.52669720277611,
+  "test_bleu_beam": 40.64790584690494,
+  "beam_size": 4,
+  "samples": [
+    {
+      "src": "ein mann mit einem orangefarbenen hut , der etwas <unk> .",
+      "ref": "a man in an orange hat starring at something .",
+      "greedy": "a man in an orange hat <unk> something .",
+      "beam": "a man in an orange hat <unk> something ."
+    },
+    {
+      "src": "ein boston terrier l\u00e4uft \u00fcber <unk> - gr\u00fcnes gras vor einem wei\u00dfen zaun .",
+      "ref": "a boston terrier is running on lush green grass in front of a white fence .",
+      "greedy": "a boston greyhound runs along the <unk> green grass in front of a white fence .",
+      "beam": "a boston dog is running over <unk> green grass in front of a white fence ."
+    },
+    {
+      "src": "ein m\u00e4dchen in einem karateanzug bricht ein brett mit einem tritt .",
+      "ref": "a girl in karate uniform breaking a stick with a front kick .",
+      "greedy": "a girl in a karate uniform is doing a board with a kick .",
+      "beam": "a girl in a karate uniform is <unk> a board ."
+    },
+    {
+      "src": "f\u00fcnf leute in winterjacken und mit helmen stehen im schnee mit <unk> im hintergrund .",
+      "ref": "five people wearing winter jackets and helmets stand in the snow , with <unk> in the background .",
+      "greedy": "five people in winter jackets and helmets stand in the snow with snow in the background .",
+      "beam": "five people in winter jackets and helmets stand in the snow with snow in the background ."
+    },
+    {
+      "src": "leute reparieren das dach eines hauses .",
+      "ref": "people are fixing the roof of a house .",
+      "greedy": "people are fixing the roof of a house .",
+      "beam": "people are fixing the roof of a house ."
+    },
+    {
+      "src": "eine gl\u00fcckliche frau bereitet in einem coffee - shop eine <unk> zu .",
+      "ref": "a happy woman is preparing a <unk> at a coffee shop .",
+      "greedy": "a happy woman is making a <unk> in a coffee shop .",
+      "beam": "a happy woman is making a <unk> shop ."
+    },
+    {
+      "src": "ein junge posiert mit einem gro\u00dfen gr\u00fcnen insekt auf der nase .",
+      "ref": "a boy poses with a large green insect on his nose .",
+      "greedy": "a boy is posing with a large green star on his nose .",
+      "beam": "a boy is posing with a large green star on his nose ."
+    },
+    {
+      "src": "ein tisch voller <unk> bilder , ein freiluftmarkt .",
+      "ref": "a table full of pictures in frames , at an outdoor market .",
+      "greedy": "a table full of fresh <unk> are taking an open carnival .",
+      "beam": "there is a table full of fresh <unk> ."
+    }
+  ]
 }

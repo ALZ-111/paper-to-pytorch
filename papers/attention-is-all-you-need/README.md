@@ -2,6 +2,63 @@
 
 > Vaswani, Shazeer, Parmar, Uszkoreit, Jones, Gomez, Kaiser, Polosukhin — 2017 — https://arxiv.org/abs/1706.03762
 
+A from-scratch PyTorch implementation of the original encoder–decoder Transformer,
+verified numerically against `torch.nn.Transformer` and trained to **40.7 BLEU** on
+Multi30k German→English on a laptop CPU.
+
+<p align="center">
+  <img src="../../assets/attention/cross_attention.png" width="100%">
+  <br><em>Decoder cross-attention for one test sentence. By layer 3 every head has learned a
+  near-monotonic German→English word alignment; "eine treppe" fans out over "a set of stairs".</em>
+</p>
+
+---
+
+## Results
+
+### Multi30k De→En (29k training pairs, 1k test sentences)
+
+| | This implementation | Reference points |
+|---|---|---|
+| **Test BLEU, beam 4** | **40.7** | 35–38 typical for small word-level models on this split |
+| Test BLEU, greedy | 40.5 | |
+| Validation BLEU (best epoch) | 41.1 | |
+| Validation perplexity | 4.65 | |
+| Parameters | 9.1M | 65M (paper, base model) |
+| Architecture | 3 layers, d_model 256, 8 heads, d_ff 1024 | 6 layers, 512, 8, 2048 |
+| Training | 20 epochs, 72 min, 4-core Intel i5 CPU | 12 h, 8× P100 GPUs (WMT14) |
+
+BLEU is corpus BLEU-4 with brevity penalty on lowercased, punctuation-split tokens,
+computed by [`bleu.py`](bleu.py) from the definition. The paper's 27.3 BLEU is on the
+much harder WMT14 En–De benchmark and is not comparable.
+
+<p align="center"><img src="../../assets/attention/training_curves.png" width="100%"></p>
+
+### Correctness
+
+| Check | Result |
+|---|---|
+| Weights copied into `torch.nn.Transformer`: encoder output, decoder output, and input gradients | agree to **1e-5** with padding and causal masks active |
+| Component shape tests, softmax normalisation, mask zeroing, decoder causality, pre-norm variant | 8/8 pass |
+| Toy sequence-reversal task (requires cross-attention to solve) | 99.2% exact match in 600 steps |
+
+Sample test-set translations (beam search, width 4; `<unk>` is a word outside the
+training vocabulary, a limitation of word-level tokenisation):
+
+```
+DE   : ein typ arbeitet an einem gebäude .
+REF  : a guy works on a building .
+OURS : a guy working on a building .
+
+DE   : ein sitzender mann , der an einem tisch in seinem haus mit einem werkzeug arbeitet .
+REF  : man sitting using tool at a table in his home .
+OURS : a man sitting at a table working with a tool in his house .
+
+DE   : ein boston terrier läuft über <unk> - grünes gras vor einem weißen zaun .
+REF  : a boston terrier is running on lush green grass in front of a white fence .
+OURS : a boston dog is running over <unk> green grass in front of a white fence .
+```
+
 ---
 
 ## Key Idea
@@ -16,7 +73,7 @@ in parallel, and the path between any two positions is length 1.
 
 ## Architecture
 
-Encoder–decoder, both stacks of N = 6 identical layers.
+Encoder–decoder, both stacks of N identical layers.
 
 ```
 Encoder layer:                  Decoder layer:
@@ -59,61 +116,72 @@ Each head gets its own low-dimensional projection, so heads can specialise.
 
 Attention is permutation-invariant, so position has to be injected explicitly.
 
+<p align="center"><img src="../../assets/attention/positional_encoding.png" width="100%"></p>
+
 **Residual + LayerNorm** (post-norm in the original paper)
 
     LayerNorm(x + Sublayer(x))
 
----
-
-## Build Order
-
-Each piece has a shape test in `test_model.py`; implement top to bottom and run the tests.
-
-1. `scaled_dot_product_attention` — the core function, with optional mask
-2. `MultiHeadAttention` — projections, head split/merge
-3. `PositionwiseFeedForward`
-4. `PositionalEncoding`
-5. `EncoderLayer`, `DecoderLayer`
-6. `Encoder`, `Decoder`, `Transformer` — plus `make_causal_mask` and `make_pad_mask`
+`model.py` defaults to this layout. Pass `pre_norm=True` for the modern variant,
+`x + Sublayer(LayerNorm(x))`, used by GPT-2 onward because it trains stably at depth
+without careful warmup; it adds one final LayerNorm per stack.
 
 ---
 
-## My Implementation
+## Files
 
-- **Model:** `model.py` — every component from the paper, heavily commented, plus `greedy_decode`
-- **Tests:** `test_model.py` — shape tests per component and a causality check on the full model
-- **Training:** `train.py` — Noam LR schedule, label smoothing, Adam(β₂=0.98) as in Section 5.3
+| File | What it is |
+|---|---|
+| [`model.py`](model.py) | Every component, built bottom-up and heavily commented: scaled dot-product attention → multi-head attention → FFN → positional encoding → encoder/decoder layers → full model, plus greedy and beam-search decoding |
+| [`test_model.py`](test_model.py) | Shape and behaviour tests, one per component |
+| [`test_equivalence.py`](test_equivalence.py) | Weight-transplant equivalence test against `torch.nn.Transformer` |
+| [`data.py`](data.py) | Multi30k download, tokenisation, vocab, token-count batching |
+| [`bleu.py`](bleu.py) | Corpus BLEU from the definition |
+| [`translate.py`](translate.py) | Training with the paper's recipe (Noam schedule, Adam β₂ = 0.98, label smoothing 0.1, weight tying), evaluation, and a demo command |
+| [`train.py`](train.py) | Toy sequence-reversal task, trains in 40 s |
+| [`visualize.py`](visualize.py) | Produces every figure in this README |
+| [`results.json`](results.json) | Per-epoch metrics of the reported run |
+
+## Running it
 
 ```bash
-python -m pytest test_model.py -v   # 7 tests
-python train.py                     # toy task, ~40s on CPU
+pip install torch matplotlib requests pytest
+
+python -m pytest test_model.py test_equivalence.py -v   # 11 tests, ~5 s
+python train.py                                         # toy task, ~40 s on CPU
+python translate.py train                               # Multi30k, ~70 min on CPU
+python translate.py evaluate --beam 4                   # test BLEU, greedy and beam
+python translate.py demo "ein hund läuft durch den schnee ."
+python visualize.py                                     # regenerate figures
 ```
 
----
-
-## Results
-
-The paper trains on WMT14 En–De for 12 hours on 8 P100s; not reproduced here. Instead the
-model is verified end to end on a toy sequence-reversal task: encoder sees `[3, 9, 4, 1]`,
-decoder must emit `[1, 4, 9, 3]`. Solving it requires the decoder to cross-attend to
-position S−1−i of the source.
-
-| Metric | Paper (WMT14 En–De, base) | Mine (reverse task, 2 layers, d=128) |
-|--------|---------------------------|--------------------------------------|
-| Parameters | 65M | 0.93M |
-| Exact-match seq accuracy | – | 99.2% after 600 steps |
-| BLEU | 27.3 | – |
-
-Training loss plateaus around 0.65 rather than 0; that is the floor imposed by label
-smoothing 0.1, not underfitting.
+Checkpoints go to `checkpoints/` (git-ignored).
 
 ---
 
 ## What I Learned
 
-*Fill in as you go.* Some things worth noticing while reading the code:
+- **Initialisation matters more than any hyperparameter.** Xavier-uniform on the
+  (vocab × d_model) embedding gives std ≈ 0.017; after the √d_model scaling the token
+  signal is ≈ 0.27 and the positional encoding (amplitude 1) drowns it out. Validation
+  BLEU stalled at 6 after five epochs. Switching embeddings to N(0, d_model^-½) took it
+  to 31 at the same point. Found by a 512-sentence overfitting probe with ablations.
+- **The multi-head "Concat" is a `view` + `transpose`.** There is no real concatenation, and
+  all h heads are computed by one (D × D) matmul per Q/K/V.
+- **Masks combine by broadcasting.** Pad mask `(B,1,1,T)` & causal mask `(1,1,T,T)` →
+  `(B,1,T,T)`. PyTorch's convention is inverted (True = blocked), which the equivalence
+  test had to account for.
+- **Attention heads specialise by depth.** Layer-1 cross-attention is diffuse; layer-3 is
+  almost a hard alignment. The decoder's self-attention shows the causal mask as a clean
+  upper triangle of zeros.
+- **The Noam schedule's peak learning rate depends on warmup.** With only ~180 steps per
+  epoch, warmup 400 and factor 0.5 gave a peak of 1.6e-3; the default factor of 1.0
+  overshot and BLEU dipped exactly when the rate peaked.
 
-- The multi-head "Concat" is a `view` + `transpose`; there is no real concatenation.
-- Masks combine by broadcasting: pad mask `(B,1,1,T)` & causal mask `(1,1,T,T)` → `(B,1,T,T)`.
-- The decoder input and loss target are the same sequence shifted by one (teacher forcing).
-- Embeddings are multiplied by √d_model so the positional encoding doesn't dominate them.
+## Resume-ready summary
+
+> Implemented the Transformer (Vaswani et al., 2017) from scratch in PyTorch — multi-head
+> attention, sinusoidal positional encoding, encoder–decoder stacks, beam search — and
+> verified it matches `torch.nn.Transformer` to 1e-5 via weight transplant. Trained a 9M-parameter
+> model to 40.7 BLEU on Multi30k De→En in 72 minutes on a laptop CPU; diagnosed and fixed a
+> 5× training slowdown caused by embedding initialisation using an ablation study.

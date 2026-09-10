@@ -88,5 +88,26 @@ def test_6_transformer_forward_and_causality():
     assert torch.allclose(logits[:, :-1], logits2[:, :-1], atol=1e-5)
 
 
+def test_7_pre_norm_variant():
+    """pre_norm=True must keep shapes and causality, and add exactly one final
+    LayerNorm per stack; pre_norm=False must not."""
+    torch.manual_seed(0)
+    pre = m.Transformer(50, 60, d_model=D, n_layers=2, n_heads=H, d_ff=FF, dropout=0.0, pre_norm=True)
+    post = m.Transformer(50, 60, d_model=D, n_layers=2, n_heads=H, d_ff=FF, dropout=0.0)
+    assert isinstance(pre.encoder.final_norm, torch.nn.LayerNorm)
+    assert isinstance(post.encoder.final_norm, torch.nn.Identity)
+    n_norms = lambda model: sum(isinstance(x, torch.nn.LayerNorm) for x in model.modules())
+    assert n_norms(pre) == n_norms(post) + 2
+
+    pre.eval()
+    src = torch.randint(1, 50, (B, S))
+    tgt = torch.randint(1, 60, (B, T))
+    logits = pre(src, tgt)
+    assert logits.shape == (B, T, 60)
+    tgt2 = tgt.clone()
+    tgt2[:, -1] = (tgt2[:, -1] + 1) % 60
+    assert torch.allclose(logits[:, :-1], pre(src, tgt2)[:, :-1], atol=1e-5)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

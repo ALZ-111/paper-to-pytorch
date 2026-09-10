@@ -8,9 +8,9 @@ Shape conventions used throughout:
     B = batch size, S = source length, T = target length,
     D = d_model, H = number of heads, Dk = D // H
 
-Follows the original "post-norm" layout: LayerNorm(x + Sublayer(x)).
-Modern models (GPT-2 onward) usually use pre-norm, x + Sublayer(LayerNorm(x)),
-which trains more stably at depth. Swapping is a one-line change in each layer.
+Defaults to the original "post-norm" layout, LayerNorm(x + Sublayer(x)).
+Pass pre_norm=True for the modern variant, x + Sublayer(LayerNorm(x)) (GPT-2 onward),
+which trains more stably at depth; see SublayerConnection.
 """
 
 import math
@@ -186,24 +186,31 @@ class SublayerConnection(nn.Module):
     same wrapper serve attention and feed-forward blocks.
     """
 
-    def __init__(self, d_model, dropout=0.1):
+    def __init__(self, d_model, dropout=0.1, pre_norm=False):
         super().__init__()
         self.norm = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
+        self.pre_norm = pre_norm
 
     def forward(self, x, sublayer):
+        if self.pre_norm:
+            # Pre-norm (Xiong et al., 2020; used by GPT-2 onward): normalise the input
+            # to the sublayer and leave the residual stream un-normalised. Gradients
+            # then flow through a clean identity path, so deep stacks train without
+            # careful warmup. Requires a final LayerNorm at the top of the stack.
+            return x + self.dropout(sublayer(self.norm(x)))
         return self.norm(x + self.dropout(sublayer(x)))
 
 
 class EncoderLayer(nn.Module):
     """Self-attention -> Add&Norm -> FFN -> Add&Norm."""
 
-    def __init__(self, d_model, n_heads, d_ff, dropout=0.1):
+    def __init__(self, d_model, n_heads, d_ff, dropout=0.1, pre_norm=False):
         super().__init__()
         self.self_attn = MultiHeadAttention(d_model, n_heads, dropout)
         self.ff = PositionwiseFeedForward(d_model, d_ff, dropout)
-        self.sub1 = SublayerConnection(d_model, dropout)
-        self.sub2 = SublayerConnection(d_model, dropout)
+        self.sub1 = SublayerConnection(d_model, dropout, pre_norm)
+        self.sub2 = SublayerConnection(d_model, dropout, pre_norm)
 
     def forward(self, x, src_mask=None):
         """x: (B, S, D) -> (B, S, D)"""
@@ -218,14 +225,14 @@ class DecoderLayer(nn.Module):
     from the decoder, keys and values from the encoder output ("memory").
     """
 
-    def __init__(self, d_model, n_heads, d_ff, dropout=0.1):
+    def __init__(self, d_model, n_heads, d_ff, dropout=0.1, pre_norm=False):
         super().__init__()
         self.self_attn = MultiHeadAttention(d_model, n_heads, dropout)
         self.cross_attn = MultiHeadAttention(d_model, n_heads, dropout)
         self.ff = PositionwiseFeedForward(d_model, d_ff, dropout)
-        self.sub1 = SublayerConnection(d_model, dropout)
-        self.sub2 = SublayerConnection(d_model, dropout)
-        self.sub3 = SublayerConnection(d_model, dropout)
+        self.sub1 = SublayerConnection(d_model, dropout, pre_norm)
+        self.sub2 = SublayerConnection(d_model, dropout, pre_norm)
+        self.sub3 = SublayerConnection(d_model, dropout, pre_norm)
 
     def forward(self, x, memory, tgt_mask=None, src_mask=None):
         """x: (B, T, D)  memory: (B, S, D) encoder output -> (B, T, D)"""
@@ -256,14 +263,16 @@ def make_causal_mask(size, device=None):
 
 
 class Encoder(nn.Module):
-    def __init__(self, vocab_size, d_model, n_layers, n_heads, d_ff, dropout=0.1):
+    def __init__(self, vocab_size, d_model, n_layers, n_heads, d_ff, dropout=0.1, pre_norm=False):
         super().__init__()
         self.d_model = d_model
         self.embed = nn.Embedding(vocab_size, d_model)
         self.pos = PositionalEncoding(d_model, dropout)
         self.layers = nn.ModuleList(
-            [EncoderLayer(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)]
+            [EncoderLayer(d_model, n_heads, d_ff, dropout, pre_norm) for _ in range(n_layers)]
         )
+        # Pre-norm leaves the residual stream un-normalised, so normalise once at the end.
+        self.final_norm = nn.LayerNorm(d_model) if pre_norm else nn.Identity()
 
     def forward(self, src, src_mask=None):
         """src: (B, S) token ids -> (B, S, D)"""
@@ -272,25 +281,27 @@ class Encoder(nn.Module):
         x = self.pos(self.embed(src) * math.sqrt(self.d_model))
         for layer in self.layers:
             x = layer(x, src_mask)
-        return x
+        return self.final_norm(x)
 
 
 class Decoder(nn.Module):
-    def __init__(self, vocab_size, d_model, n_layers, n_heads, d_ff, dropout=0.1):
+    def __init__(self, vocab_size, d_model, n_layers, n_heads, d_ff, dropout=0.1, pre_norm=False):
         super().__init__()
         self.d_model = d_model
         self.embed = nn.Embedding(vocab_size, d_model)
         self.pos = PositionalEncoding(d_model, dropout)
         self.layers = nn.ModuleList(
-            [DecoderLayer(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)]
+            [DecoderLayer(d_model, n_heads, d_ff, dropout, pre_norm) for _ in range(n_layers)]
         )
+        # Pre-norm leaves the residual stream un-normalised, so normalise once at the end.
+        self.final_norm = nn.LayerNorm(d_model) if pre_norm else nn.Identity()
 
     def forward(self, tgt, memory, tgt_mask=None, src_mask=None):
         """tgt: (B, T) token ids, memory: (B, S, D) -> (B, T, D)"""
         x = self.pos(self.embed(tgt) * math.sqrt(self.d_model))
         for layer in self.layers:
             x = layer(x, memory, tgt_mask, src_mask)
-        return x
+        return self.final_norm(x)
 
 
 class Transformer(nn.Module):
@@ -308,11 +319,12 @@ class Transformer(nn.Module):
         dropout=0.1,
         pad_idx=0,
         tie_weights=False,
+        pre_norm=False,
     ):
         super().__init__()
         self.pad_idx = pad_idx
-        self.encoder = Encoder(src_vocab_size, d_model, n_layers, n_heads, d_ff, dropout)
-        self.decoder = Decoder(tgt_vocab_size, d_model, n_layers, n_heads, d_ff, dropout)
+        self.encoder = Encoder(src_vocab_size, d_model, n_layers, n_heads, d_ff, dropout, pre_norm)
+        self.decoder = Decoder(tgt_vocab_size, d_model, n_layers, n_heads, d_ff, dropout, pre_norm)
         # Projects decoder states to vocabulary logits.
         self.generator = nn.Linear(d_model, tgt_vocab_size)
 

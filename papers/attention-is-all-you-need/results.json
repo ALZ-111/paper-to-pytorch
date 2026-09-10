@@ -200,7 +200,7 @@
   ],
   "best_val_bleu_greedy": 41.127006723328975,
   "test_bleu_greedy": 40.52669720277611,
-  "test_bleu_beam": 40.64790584690494,
+  "test_bleu_beam": 40.664473536516915,
   "beam_size": 4,
   "samples": [
     {

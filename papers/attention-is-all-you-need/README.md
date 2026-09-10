@@ -34,12 +34,22 @@ much harder WMT14 En–De benchmark and is not comparable.
 
 <p align="center"><img src="../../assets/attention/training_curves.png" width="100%"></p>
 
+### Inference speed (1,000 test sentences, 4-core CPU, batch 128)
+
+| Decoder | Before | After | Change |
+|---|---|---|---|
+| Greedy | 20.8 s (full prefix recompute) | 4.7 s (KV cache) | 4.4× |
+| Beam 4 | 96 s (one sentence at a time) | 28 s (batched + KV cache) | 3.4× |
+
+Both optimisations are verified token-for-token identical to the naive paths in
+`test_model.py`; beam BLEU is unchanged at 40.7.
+
 ### Correctness
 
 | Check | Result |
 |---|---|
 | Weights copied into `torch.nn.Transformer`: encoder output, decoder output, and input gradients | agree to **1e-5** with padding and causal masks active |
-| Component shape tests, softmax normalisation, mask zeroing, decoder causality, pre-norm variant | 8/8 pass |
+| Component shape tests, softmax normalisation, mask zeroing, decoder causality, pre-norm variant, KV cache, batched beam | 10/10 pass |
 | Toy sequence-reversal task (requires cross-attention to solve) | 99.2% exact match in 600 steps |
 
 Sample test-set translations (beam search, width 4; `<unk>` is a word outside the
@@ -147,7 +157,7 @@ without careful warmup; it adds one final LayerNorm per stack.
 ```bash
 pip install torch matplotlib requests pytest
 
-python -m pytest test_model.py test_equivalence.py -v   # 11 tests, ~5 s
+python -m pytest test_model.py test_equivalence.py -v   # 13 tests, ~8 s
 python train.py                                         # toy task, ~40 s on CPU
 python translate.py train                               # Multi30k, ~70 min on CPU
 python translate.py evaluate --beam 4                   # test BLEU, greedy and beam

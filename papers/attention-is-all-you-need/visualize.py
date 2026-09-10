@@ -104,7 +104,7 @@ def plot_attention_maps(sentence):
 
     src_words = tokenize(sentence)
     src = torch.tensor([[src_stoi.get(w, 3) for w in src_words]])
-    out_ids = model.beam_search(src, BOS, EOS, beam_size=4)
+    out_ids = model.beam_search(src, BOS, EOS, beam_size=4)[0]
     # Re-run a full teacher-forced pass so every layer's .attn is for the final output.
     tgt_in = torch.tensor([out_ids[:-1]]) if out_ids[-1] == EOS else torch.tensor([out_ids])
     with torch.no_grad():

@@ -67,17 +67,14 @@ def translate_corpus(model, pairs, tgt_vocab, device, beam=0, batch_size=128, ma
     """Decode every source sentence in `pairs`. Returns list of token lists."""
     model.eval()
     hyps = []
-    if beam > 0:
-        for src_ids, _ in pairs:
-            src = torch.tensor([src_ids], device=device)
-            out = model.beam_search(src, BOS, EOS, beam_size=beam, max_len=max_len)
-            hyps.append(tgt_vocab.decode(out))
-    else:
-        for i in range(0, len(pairs), batch_size):
-            chunk = pairs[i : i + batch_size]
-            src, _ = collate(chunk)
-            out = model.greedy_decode(src.to(device), BOS, EOS, max_len=max_len)
-            hyps.extend(tgt_vocab.decode(row) for row in out.tolist())
+    for i in range(0, len(pairs), batch_size):
+        src, _ = collate(pairs[i : i + batch_size])
+        src = src.to(device)
+        if beam > 0:
+            outs = model.beam_search(src, BOS, EOS, beam_size=beam, max_len=max_len)
+        else:
+            outs = model.greedy_decode(src, BOS, EOS, max_len=max_len).tolist()
+        hyps.extend(tgt_vocab.decode(row) for row in outs)
     return hyps
 
 
@@ -228,7 +225,7 @@ def demo(args):
     src_stoi = {w: i for i, w in enumerate(ckpt["src_itos"])}
     tgt_itos = ckpt["tgt_itos"]
     ids = [src_stoi.get(t, 3) for t in tokenize(args.sentence)]
-    out = model.beam_search(torch.tensor([ids], device=device), BOS, EOS, beam_size=args.beam)
+    out = model.beam_search(torch.tensor([ids], device=device), BOS, EOS, beam_size=args.beam)[0]
     words = [tgt_itos[i] for i in out[1:] if i not in (PAD, EOS)]
     print(" ".join(words))
 

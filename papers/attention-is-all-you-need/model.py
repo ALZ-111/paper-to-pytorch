@@ -426,55 +426,103 @@ class Transformer(nn.Module):
         return ys
 
     @torch.no_grad()
-    def beam_search(self, src, bos_idx, eos_idx, beam_size=4, max_len=64, length_penalty=0.6):
-        """Beam search decoding for a single source sentence (Section 6.1 of the paper
-        uses beam 4 and length penalty alpha = 0.6).
+    def beam_search(self, src, bos_idx, eos_idx, beam_size=4, max_len=64,
+                    length_penalty=0.6, use_cache=True):
+        """Batched beam search (Section 6.1 of the paper uses beam 4, alpha = 0.6).
 
-        Keeps the `beam_size` most probable partial sequences at each step instead of
+        Keeps the `beam_size` most probable partial sequences per sentence instead of
         only the single best (greedy). Finished hypotheses are scored by
         log_prob / ((5 + len) / 6) ** alpha, which stops the search from favouring
         short outputs.
 
-        src: (1, S) -> list of token ids (including BOS, ending with EOS if produced)
-        """
-        assert src.size(0) == 1, "beam_search decodes one sentence at a time"
-        self.eval()
-        memory, src_mask = self.encode(src)
-        memory = memory.expand(beam_size, -1, -1)
-        src_mask = src_mask.expand(beam_size, -1, -1, -1)
+        All B sentences and their K beams are flattened into one batch of B*K rows so
+        each step is a single decoder call; the KV cache rows are re-gathered after
+        every step to follow the surviving beams. Padding in `src` is handled by the
+        source mask, so results do not depend on what a sentence is batched with.
 
-        beams = torch.full((1, 1), bos_idx, dtype=torch.long, device=src.device)
-        scores = torch.zeros(1, device=src.device)
-        finished = []
+        src: (B, S) -> list of B token-id lists (each starts with BOS and ends with
+        EOS unless max_len was hit)
+        """
+        self.eval()
+        B, K, dev = src.size(0), beam_size, src.device
+        neg_inf = float("-inf")
+
+        memory, src_mask = self.encode(src)
+        memory = memory.repeat_interleave(K, dim=0)      # (B*K, S, D)
+        src_mask = src_mask.repeat_interleave(K, dim=0)  # (B*K, 1, 1, S)
+
+        seqs = torch.full((B * K, 1), bos_idx, dtype=torch.long, device=dev)
+        # Only beam 0 is live at the start, otherwise K identical copies of BOS would
+        # fill the whole beam with duplicates on the first step.
+        scores = torch.full((B, K), neg_inf, device=dev)
+        scores[:, 0] = 0.0
+        finished = [[] for _ in range(B)]
+        done = [False] * B
+        caches = self.decoder.new_caches() if use_cache else None
 
         for step in range(max_len - 1):
-            k = beams.size(0)
-            out = self.decode(beams, memory[:k], src_mask[:k])
-            log_probs = F.log_softmax(self.generator(out[:, -1]), dim=-1)  # (k, V)
-            vocab = log_probs.size(-1)
+            if use_cache:
+                out = self.decoder(seqs[:, -1:], memory, None, src_mask, caches=caches, offset=step)
+            else:
+                out = self.decode(seqs, memory, src_mask)
+            log_probs = F.log_softmax(self.generator(out[:, -1]), dim=-1)  # (B*K, V)
+            V = log_probs.size(-1)
 
-            # Every (beam, next-token) pair is a candidate; pick the top beam_size overall.
-            cand = (scores.unsqueeze(1) + log_probs).view(-1)
-            top_scores, top_idx = cand.topk(min(beam_size, cand.numel()))
-            beam_idx, tok_idx = top_idx // vocab, top_idx % vocab
-            beams = torch.cat([beams[beam_idx], tok_idx.unsqueeze(1)], dim=1)
-            scores = top_scores
+            # Every (beam, next-token) pair is a candidate. Take the top 2K per sentence
+            # so that candidates ending in EOS can be retired without starving the beam.
+            cand = (scores.view(B * K, 1) + log_probs).view(B, K * V)
+            top_scores, top_idx = cand.topk(2 * K, dim=1)
+            beam_idx, tok_idx = top_idx // V, top_idx % V
+            lp = ((5 + step + 2) / 6) ** length_penalty  # length incl. BOS after this step
 
-            # Move finished hypotheses out of the active set.
-            is_eos = tok_idx == eos_idx
-            for i in torch.nonzero(is_eos).flatten().tolist():
-                lp = ((5 + beams.size(1)) / 6) ** length_penalty
-                finished.append((scores[i].item() / lp, beams[i].tolist()))
-            keep = ~is_eos
-            beams, scores = beams[keep], scores[keep]
-            if beams.size(0) == 0 or len(finished) >= beam_size:
+            new_scores = torch.full((B, K), neg_inf, device=dev)
+            new_parent = torch.arange(B, device=dev).repeat_interleave(K).view(B, K)
+            new_tok = torch.full((B, K), eos_idx, dtype=torch.long, device=dev)
+            ts, bi, ti = top_scores.tolist(), beam_idx.tolist(), tok_idx.tolist()
+            for b in range(B):
+                if done[b]:
+                    continue
+                j = 0
+                for c in range(2 * K):
+                    if ts[b][c] == neg_inf:
+                        break
+                    if ti[b][c] == eos_idx:
+                        # Only an EOS ranked inside the top K counts as a finished
+                        # hypothesis (as in fairseq). Lower-ranked EOS candidates would
+                        # fill the finished pool with weak outputs and stop the search
+                        # before better, longer hypotheses complete.
+                        if c < K and len(finished[b]) < K:
+                            finished[b].append((ts[b][c] / lp, seqs[b * K + bi[b][c]].tolist() + [eos_idx]))
+                    elif j < K:
+                        new_scores[b, j] = ts[b][c]
+                        new_parent[b, j] = b * K + bi[b][c]
+                        new_tok[b, j] = ti[b][c]
+                        j += 1
+                    if j == K:
+                        break
+                if len(finished[b]) >= K:
+                    done[b] = True
+
+            flat = new_parent.view(-1)
+            seqs = torch.cat([seqs[flat], new_tok.view(-1, 1)], dim=1)
+            scores = new_scores
+            if use_cache:
+                # Self-attention caches must follow their beams; cross-attention K/V
+                # are identical across the K beams of a sentence and need no reorder.
+                for c in caches:
+                    c["self"]["k"] = c["self"]["k"][flat]
+                    c["self"]["v"] = c["self"]["v"][flat]
+            if all(done):
                 break
 
-        # If nothing finished, fall back to the best unfinished beam.
-        if not finished:
-            lp = ((5 + beams.size(1)) / 6) ** length_penalty
-            finished = [(scores[i].item() / lp, beams[i].tolist()) for i in range(beams.size(0))]
-        return max(finished, key=lambda x: x[0])[1]
+        results = []
+        for b in range(B):
+            if not finished[b]:  # hit max_len: fall back to the best live beam
+                lp = ((5 + seqs.size(1)) / 6) ** length_penalty
+                best = int(scores[b].argmax())
+                finished[b].append((scores[b, best].item() / lp, seqs[b * K + best].tolist()))
+            results.append(max(finished[b], key=lambda x: x[0])[1])
+        return results
 
 
 if __name__ == "__main__":

@@ -135,5 +135,38 @@ def test_8_kv_cache_matches_full_recompute():
     assert caches[0]["cross"]["k"].shape == (B, H, S, D // H)
 
 
+def test_9_batched_beam_search():
+    """Batched beam search must (a) give each sentence the same result it gets when
+    decoded alone, regardless of padding from batch-mates, (b) agree between the
+    cached and full-recompute paths, and (c) beat greedy on total log-probability."""
+    torch.manual_seed(1)
+    model = m.Transformer(50, 60, d_model=D, n_layers=2, n_heads=H, d_ff=FF, dropout=0.0)
+    model.eval()
+    src = torch.randint(1, 50, (4, S))
+    src[0, -3:] = 0
+    src[2, -1:] = 0
+    batched = model.beam_search(src, bos_idx=1, eos_idx=59, beam_size=3, max_len=10)
+    for b in range(4):
+        row = src[b : b + 1, : int((src[b] != 0).sum())]  # strip this row's padding
+        alone = model.beam_search(row, bos_idx=1, eos_idx=59, beam_size=3, max_len=10)[0]
+        assert batched[b] == alone
+    uncached = model.beam_search(src, bos_idx=1, eos_idx=59, beam_size=3, max_len=10, use_cache=False)
+    assert batched == uncached
+    for seq in batched:
+        assert seq[0] == 1 and len(seq) <= 10
+
+    # Beam search optimises sequence log-prob; it must never be worse than greedy
+    # on that objective for a sequence that finished with EOS.
+    def seq_logprob(tokens):
+        tgt = torch.tensor([tokens[:-1]])
+        memory, src_mask = model.encode(src[1:2])
+        lp = torch.log_softmax(model.generator(model.decode(tgt, memory, src_mask)), -1)[0]
+        return sum(lp[i, tokens[i + 1]].item() for i in range(len(tokens) - 1))
+    greedy = model.greedy_decode(src[1:2], bos_idx=1, eos_idx=59, max_len=10)[0].tolist()
+    beam = model.beam_search(src[1:2], bos_idx=1, eos_idx=59, beam_size=8, max_len=10, length_penalty=0.0)[0]
+    if greedy[-1] == 59 and beam[-1] == 59:
+        assert seq_logprob(beam) >= seq_logprob(greedy) - 1e-5
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

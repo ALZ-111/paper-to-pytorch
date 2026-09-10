@@ -1,5 +1,7 @@
 # paper-to-pytorch
 
+[![tests](https://github.com/ALZ-111/paper-to-pytorch/actions/workflows/tests.yml/badge.svg)](https://github.com/ALZ-111/paper-to-pytorch/actions/workflows/tests.yml)
+
 PyTorch implementations of ML research papers from scratch.
 
 Each folder in `papers/` contains a clean, well-commented implementation of a landmark paper — built to understand the ideas deeply, not just run the code.
@@ -34,7 +36,7 @@ paper-to-pytorch/
 ```bash
 git clone https://github.com/ALZ-111/paper-to-pytorch.git
 cd paper-to-pytorch
-pip install torch torchvision matplotlib numpy jupyter
+pip install -r requirements.txt
 ```
 
 ---

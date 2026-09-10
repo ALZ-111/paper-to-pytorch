@@ -149,6 +149,7 @@ without careful warmup; it adds one final LayerNorm per stack.
 | [`bleu.py`](bleu.py) | Corpus BLEU from the definition |
 | [`translate.py`](translate.py) | Training with the paper's recipe (Noam schedule, Adam β₂ = 0.98, label smoothing 0.1, weight tying), evaluation, and a demo command |
 | [`train.py`](train.py) | Toy sequence-reversal task, trains in 40 s |
+| [`notebook.ipynb`](notebook.ipynb) | Executed walkthrough: attention on a toy example, the √d_k effect, positional-encoding similarity, live translations, head entropy by layer, KV-cache timing, and a no-positional-encoding ablation |
 | [`visualize.py`](visualize.py) | Produces every figure in this README |
 | [`results.json`](results.json) | Per-epoch metrics of the reported run |
 
@@ -184,6 +185,12 @@ Checkpoints go to `checkpoints/` (git-ignored).
 - **Attention heads specialise by depth.** Layer-1 cross-attention is diffuse; layer-3 is
   almost a hard alignment. The decoder's self-attention shows the causal mask as a clean
   upper triangle of zeros.
+- **Positional encoding is load-bearing.** Zeroing the PE buffer at inference (weights
+  untouched) turns "a man is riding a bicycle" into "a man is riding a bike on a bike
+  bike bike …": with no order signal, the decoder cannot tell which source words it has
+  already covered. See the ablation in `notebook.ipynb`.
+- **Cross-attention sharpens with depth.** Mean entropy drops from 1.83 nats (layer 1) to
+  0.59 (layer 3) against a uniform baseline of 2.48.
 - **The Noam schedule's peak learning rate depends on warmup.** With only ~180 steps per
   epoch, warmup 400 and factor 0.5 gave a peak of 1.6e-3; the default factor of 1.0
   overshot and BLEU dipped exactly when the rate peaked.

@@ -97,17 +97,34 @@ class MultiHeadAttention(nn.Module):
         # transpose makes the tensor non-contiguous, so .contiguous() before .view
         return x.transpose(1, 2).contiguous().view(B, L, self.d_model)
 
-    def forward(self, query, key, value, mask=None):
+    def forward(self, query, key, value, mask=None, cache=None, static_kv=False):
         """
         query: (B, T, D)   key/value: (B, S, D)   mask: broadcastable to (B, H, T, S)
         Returns (B, T, D).
 
         Self-attention:  query = key = value = x
         Cross-attention: query = decoder state, key = value = encoder output
+
+        cache: optional dict used during incremental decoding. Attention is the only
+        place where a new token interacts with earlier ones, so it is the only place
+        that needs to remember anything between steps:
+          - static_kv=False (decoder self-attention): the new token's K/V rows are
+            appended to cache["k"], cache["v"], and the query attends over all of them.
+            Each step then costs O(t) instead of re-running the whole prefix, O(t^2).
+          - static_kv=True (cross-attention): K/V of the encoder output never change,
+            so they are projected once and reused for every step.
         """
         q = self._split_heads(self.w_q(query))  # (B, H, T, Dk)
-        k = self._split_heads(self.w_k(key))    # (B, H, S, Dk)
-        v = self._split_heads(self.w_v(value))  # (B, H, S, Dk)
+        if cache is not None and static_kv and "k" in cache:
+            k, v = cache["k"], cache["v"]
+        else:
+            k = self._split_heads(self.w_k(key))    # (B, H, S, Dk)
+            v = self._split_heads(self.w_v(value))  # (B, H, S, Dk)
+            if cache is not None:
+                if not static_kv and "k" in cache:
+                    k = torch.cat([cache["k"], k], dim=2)
+                    v = torch.cat([cache["v"], v], dim=2)
+                cache["k"], cache["v"] = k, v
 
         out, self.attn = scaled_dot_product_attention(q, k, v, mask, self.dropout)
 
@@ -169,9 +186,10 @@ class PositionalEncoding(nn.Module):
         # but not a trainable parameter.
         self.register_buffer("pe", pe.unsqueeze(0))  # (1, max_len, D)
 
-    def forward(self, x):
-        """x: (B, T, D) token embeddings -> (B, T, D) with positions added"""
-        x = x + self.pe[:, : x.size(1)]
+    def forward(self, x, offset=0):
+        """x: (B, T, D) token embeddings -> (B, T, D) with positions added.
+        offset: index of the first position in x (non-zero during incremental decoding)."""
+        x = x + self.pe[:, offset : offset + x.size(1)]
         return self.dropout(x)
 
 
@@ -234,10 +252,14 @@ class DecoderLayer(nn.Module):
         self.sub2 = SublayerConnection(d_model, dropout, pre_norm)
         self.sub3 = SublayerConnection(d_model, dropout, pre_norm)
 
-    def forward(self, x, memory, tgt_mask=None, src_mask=None):
-        """x: (B, T, D)  memory: (B, S, D) encoder output -> (B, T, D)"""
-        x = self.sub1(x, lambda x: self.self_attn(x, x, x, tgt_mask))
-        x = self.sub2(x, lambda x: self.cross_attn(x, memory, memory, src_mask))
+    def forward(self, x, memory, tgt_mask=None, src_mask=None, cache=None):
+        """x: (B, T, D)  memory: (B, S, D) encoder output -> (B, T, D)
+        cache: {"self": {}, "cross": {}} for incremental decoding, else None."""
+        self_c = cache["self"] if cache is not None else None
+        cross_c = cache["cross"] if cache is not None else None
+        x = self.sub1(x, lambda x: self.self_attn(x, x, x, tgt_mask, cache=self_c))
+        x = self.sub2(x, lambda x: self.cross_attn(x, memory, memory, src_mask,
+                                                   cache=cross_c, static_kv=True))
         return self.sub3(x, self.ff)
 
 
@@ -296,12 +318,17 @@ class Decoder(nn.Module):
         # Pre-norm leaves the residual stream un-normalised, so normalise once at the end.
         self.final_norm = nn.LayerNorm(d_model) if pre_norm else nn.Identity()
 
-    def forward(self, tgt, memory, tgt_mask=None, src_mask=None):
-        """tgt: (B, T) token ids, memory: (B, S, D) -> (B, T, D)"""
-        x = self.pos(self.embed(tgt) * math.sqrt(self.d_model))
-        for layer in self.layers:
-            x = layer(x, memory, tgt_mask, src_mask)
+    def forward(self, tgt, memory, tgt_mask=None, src_mask=None, caches=None, offset=0):
+        """tgt: (B, T) token ids, memory: (B, S, D) -> (B, T, D)
+        caches: one {"self", "cross"} dict per layer for incremental decoding, in which
+        case tgt holds only the newest token(s) and offset is their first position."""
+        x = self.pos(self.embed(tgt) * math.sqrt(self.d_model), offset=offset)
+        for i, layer in enumerate(self.layers):
+            x = layer(x, memory, tgt_mask, src_mask, cache=caches[i] if caches else None)
         return self.final_norm(x)
+
+    def new_caches(self):
+        return [{"self": {}, "cross": {}} for _ in self.layers]
 
 
 class Transformer(nn.Module):
@@ -371,15 +398,26 @@ class Transformer(nn.Module):
         return self.generator(out)
 
     @torch.no_grad()
-    def greedy_decode(self, src, bos_idx, eos_idx, max_len=64):
+    def greedy_decode(self, src, bos_idx, eos_idx, max_len=64, use_cache=True):
         """Autoregressive inference: feed the argmax token back in until EOS.
-        src: (B, S) -> (B, <=max_len) generated ids (including BOS)."""
+        src: (B, S) -> (B, <=max_len) generated ids (including BOS).
+
+        use_cache=True runs the decoder on only the newest token each step, reusing
+        cached K/V for the prefix (see MultiHeadAttention). Output is identical to the
+        uncached path, which re-runs the full prefix and is kept for testing.
+        """
         self.eval()
         memory, src_mask = self.encode(src)
         ys = torch.full((src.size(0), 1), bos_idx, dtype=torch.long, device=src.device)
         finished = torch.zeros(src.size(0), dtype=torch.bool, device=src.device)
-        for _ in range(max_len - 1):
-            out = self.decode(ys, memory, src_mask)
+        caches = self.decoder.new_caches() if use_cache else None
+        for step in range(max_len - 1):
+            if use_cache:
+                # Only the last token goes in; the causal mask is implicit because the
+                # cache holds exactly the positions before it.
+                out = self.decoder(ys[:, -1:], memory, None, src_mask, caches=caches, offset=step)
+            else:
+                out = self.decode(ys, memory, src_mask)
             next_tok = self.generator(out[:, -1]).argmax(-1)  # (B,)
             ys = torch.cat([ys, next_tok.unsqueeze(1)], dim=1)
             finished |= next_tok == eos_idx

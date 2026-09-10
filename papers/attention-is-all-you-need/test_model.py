@@ -109,5 +109,31 @@ def test_7_pre_norm_variant():
     assert torch.allclose(logits[:, :-1], pre(src, tgt2)[:, :-1], atol=1e-5)
 
 
+def test_8_kv_cache_matches_full_recompute():
+    """Incremental decoding with cached K/V must produce exactly the same tokens as
+    re-running the full prefix every step, and per-step logits must agree."""
+    torch.manual_seed(0)
+    model = m.Transformer(50, 60, d_model=D, n_layers=2, n_heads=H, d_ff=FF, dropout=0.0)
+    model.eval()
+    src = torch.randint(1, 50, (B, S))
+    src[0, -2:] = 0  # padding on one row exercises the src mask in the cached path
+    full = model.greedy_decode(src, bos_idx=1, eos_idx=59, max_len=12, use_cache=False)
+    cached = model.greedy_decode(src, bos_idx=1, eos_idx=59, max_len=12, use_cache=True)
+    assert torch.equal(full, cached)
+
+    # Logit-level check: feed a fixed prefix token by token through the cache and
+    # compare with one teacher-forced pass over the whole prefix.
+    tgt = torch.randint(1, 60, (B, T))
+    memory, src_mask = model.encode(src)
+    ref = model.generator(model.decode(tgt, memory, src_mask))
+    caches = model.decoder.new_caches()
+    steps = [model.generator(model.decoder(tgt[:, i:i + 1], memory, None, src_mask,
+                                           caches=caches, offset=i)) for i in range(T)]
+    assert torch.allclose(ref, torch.cat(steps, dim=1), atol=1e-5)
+    # Cache grew to exactly T self-attention positions and holds static cross K/V.
+    assert caches[0]["self"]["k"].shape == (B, H, T, D // H)
+    assert caches[0]["cross"]["k"].shape == (B, H, S, D // H)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

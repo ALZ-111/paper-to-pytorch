@@ -200,6 +200,9 @@ def evaluate(args):
     t_greedy = time.time() - t0
     print(f"test BLEU greedy : {greedy_bleu:.2f}  ({t_greedy:.0f}s)")
 
+    if args.beam == 0:  # greedy only; beam search over 1k sentences takes minutes on CPU
+        _save_results({"test_bleu_greedy": greedy_bleu})
+        return
     t0 = time.time()
     beam_bleu, beam_hyps = bleu_on(model, test_pairs, tgt_vocab, device, beam=args.beam)
     t_beam = time.time() - t0

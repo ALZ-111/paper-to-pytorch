@@ -4,7 +4,9 @@
 
 A from-scratch PyTorch variational autoencoder on MNIST, reproducing the paper's
 lower-bound and marginal-likelihood numbers, its latent-dimension sweep, and its
-2-D manifold figure. Every run trains in under four minutes on a laptop CPU.
+2-D manifold figure, then going past it with a convolutional variant (log p(x) −90.7)
+and the importance-weighted objective. The paper's setup trains in under four minutes
+on a laptop CPU.
 
 <p align="center">
   <img src="../../assets/vae/latent_manifold.png" width="55%">
@@ -49,6 +51,41 @@ does not result in more overfitting"). The ELBO-to-log p(x) gap widens with Z, m
 diagonal-Gaussian posterior becomes a looser fit as the latent space grows.
 
 <p align="center"><img src="../../assets/vae/training_curves.png" width="100%"></p>
+
+### Which latent dimensions are actually used?
+
+| Z | active units | total KL (nats) |
+|---|---|---|
+| 2 | 2 | 6.5 |
+| 5 | 5 | 12.3 |
+| 10 | 10 | 19.4 |
+| 20 | 20 | 26.8 |
+| 200 | **38** | 29.8 |
+
+A dimension is *active* if the variance of its posterior mean across the test set exceeds
+0.01 (Burda et al., 2015). Every dimension is used up to Z = 20; at Z = 200 only 38 are,
+and the other 162 sit exactly at the prior with zero KL. That is the mechanism behind the
+paper's "no overfitting" observation, made quantitative. `active_units.py` computes it.
+
+<p align="center"><img src="../../assets/vae/active_units.png" width="100%"></p>
+
+### Beyond the paper: two variants at Z = 20
+
+| Model | Objective | Params | test ELBO | log p(x) | gap | active units | train time |
+|---|---|---|---|---|---|---|---|
+| MLP (paper, Appendix C) | ELBO | 0.82M | −102.6 | −97.7 | 4.9 | 20 | 3.4 min |
+| MLP | IWAE, k = 5 | 0.82M | −104.0 | −96.9 | 7.1 | 20 | 6.2 min |
+| **Conv encoder/decoder** | ELBO | 1.69M | **−97.3** | **−90.7** | 6.7 | 15 | 17.9 min |
+
+- **Convolutions are worth 7 nats.** Two stride-2 convs and their transposed mirror beat
+  the 500-unit MLP by a wide margin at the same latent size, while using *fewer* active
+  dimensions (15 vs 20): a decoder that understands local structure needs less from z.
+- **IWAE trades ELBO for likelihood.** Training on the k = 5 importance-weighted bound
+  (Burda, Grosse & Salakhutdinov, 2015) improves log p(x) by 0.8 nats but *lowers* the
+  ELBO by 1.4, and widens the ELBO-to-log p(x) gap from 4.9 to 7.1. That is the expected
+  signature: the IWAE encoder learns a broader posterior that the single-sample bound
+  penalises but the importance-weighted estimate rewards. The effect size matches the
+  ~1-nat gains the IWAE paper reports for k = 5 on MNIST.
 
 ### Samples and reconstructions
 
@@ -120,21 +157,25 @@ Always ≥ the ELBO in expectation and tighter as L grows; computed with `logsum
 
 | File | What it is |
 |---|---|
-| [`model.py`](model.py) | Encoder, decoder, reparameterization, closed-form KL, ELBO, importance-sampled log p(x), sampling and reconstruction, all commented against the paper's sections |
-| [`test_model.py`](test_model.py) | Six tests: shapes; analytic KL vs Monte Carlo; gradient flow and sample statistics through the reparameterization; Bernoulli likelihood; log p(x) ≥ ELBO; ELBO rises with training |
+| [`model.py`](model.py) | MLP and conv encoders/decoders, reparameterization, closed-form KL, ELBO, IWAE bound, importance-sampled log p(x), sampling and reconstruction, all commented against the paper's sections |
+| [`test_model.py`](test_model.py) | Eight tests: shapes; analytic KL vs Monte Carlo; gradient flow and sample statistics through the reparameterization; Bernoulli likelihood; log p(x) ≥ ELBO; ELBO rises with training; conv architecture; IWAE bound ordering L₁ = ELBO ≤ L₁₀ ≤ log p(x) |
 | [`train.py`](train.py) | MNIST training with per-epoch ELBO, reconstruction and KL |
-| [`evaluate.py`](evaluate.py) | Importance-weighted log p(x) for every trained latent size |
+| [`evaluate.py`](evaluate.py) | Importance-weighted log p(x) for every trained model |
+| [`active_units.py`](active_units.py) | Active-unit count and per-dimension KL for every trained model |
 | [`visualize.py`](visualize.py) | All figures above |
 | [`results.json`](results.json) | Per-epoch history and evaluation for all six runs |
 
 ## Running it
 
 ```bash
-python -m pytest test_model.py -v                 # 6 tests, ~5 s
-python train.py --z-dim 20 --epochs 50            # 3.4 min on CPU
+python -m pytest test_model.py -v                 # 8 tests, ~10 s
+python train.py --z-dim 20 --epochs 50            # paper's model, 3.4 min on CPU
 python train.py --z-dim 2  --epochs 50            # for the manifold figure
 for z in 3 5 10 200; do python train.py --z-dim $z --epochs 30; done
-python evaluate.py --n-test 2000 --samples 1000   # ~2 min
+python train.py --z-dim 20 --arch conv --epochs 50    # conv variant, 18 min
+python train.py --z-dim 20 --iwae-k 5 --epochs 50     # IWAE variant, 6 min
+python evaluate.py --n-test 2000 --samples 1000   # ~5 min for all eight models
+python active_units.py
 python visualize.py
 ```
 
@@ -143,8 +184,12 @@ python visualize.py
 ## What I Learned
 
 - **The KL term is a learned bottleneck.** With Z = 200 the KL settles at about 30 nats,
-  barely above Z = 20's 27: the encoder drives the variance of unused dimensions to 1 and
-  their mean to 0, paying zero KL for them. This is why the model does not overfit as Z grows.
+  barely above Z = 20's 27, because only 38 dimensions are active: the encoder drives the
+  variance of the other 162 to 1 and their mean to 0, paying zero KL for them. This is why
+  the model does not overfit as Z grows.
+- **A tighter training bound is not a better ELBO.** The IWAE model has the best MLP
+  log p(x) and the worst MLP ELBO at Z = 20. Which number you optimise changes what the
+  encoder learns; compare models on log p(x), not on the bound they were trained with.
 - **Analytic KL matters.** Estimating the KL by sampling adds variance to every gradient
   step; the closed form makes the one-sample ELBO estimator good enough to train on, which is
   the paper's Section 2.4 point about the SGVB estimator.
@@ -161,5 +206,7 @@ python visualize.py
 > Implemented a variational autoencoder from scratch in PyTorch (Kingma & Welling, 2013),
 > including the reparameterization trick, closed-form Gaussian KL and an importance-sampled
 > marginal-likelihood estimator; reproduced the paper's MNIST results (log p(x) = −97.8 nats
-> at Z = 20) and its latent-dimension sweep in under 20 minutes of laptop-CPU training, with
-> unit tests verifying the analytic KL against Monte Carlo to 0.05 nats.
+> at Z = 20) and its latent-dimension sweep in under 20 minutes of laptop-CPU training;
+> extended it with a convolutional variant reaching −90.7 nats and the importance-weighted
+> (IWAE) objective, and quantified latent usage with an active-units analysis showing a
+> 200-d model uses 38 dimensions.

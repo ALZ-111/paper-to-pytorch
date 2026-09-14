@@ -100,3 +100,37 @@ def test_6_elbo_improves_with_training():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_7_conv_architecture():
+    """Conv encoder/decoder must plug into the same VAE interface with identical shapes."""
+    vae = m.VAE(D, H, Z, arch="conv")
+    x = torch.rand(B, D)
+    logits, mu, logvar = vae(x)
+    assert logits.shape == (B, D) and mu.shape == (B, Z) and logvar.shape == (B, Z)
+    elbo, recon, kl = vae.elbo(x)
+    assert elbo.shape == (B,) and torch.isfinite(elbo).all()
+    assert vae.sample(3).shape == (3, D) and vae.reconstruct(x).shape == (B, D)
+    with pytest.raises(ValueError):
+        m.VAE(D, H, Z, arch="rnn")
+
+
+def test_8_iwae_bound_is_tighter_than_elbo_and_differentiable():
+    """L_k >= L_1 = ELBO in expectation (Burda et al. 2015, Theorem 1), and the bound
+    must carry gradients back to both encoder and decoder so it can be trained on."""
+    torch.manual_seed(0)
+    vae = m.VAE(D, H, Z)
+    x = torch.rand(64, D)
+    with torch.no_grad():
+        elbo = torch.stack([vae.elbo(x)[0] for _ in range(200)]).mean()
+        l1 = torch.stack([vae.iwae(x, k=1) for _ in range(200)]).mean()
+        l10 = torch.stack([vae.iwae(x, k=10) for _ in range(200)]).mean()
+        logpx = vae.log_marginal_likelihood(x, n_samples=2000).mean()
+    assert abs(l1 - elbo) < 0.5          # k = 1 recovers the ELBO
+    assert l10 > elbo                    # tighter with more samples
+    assert l10 <= logpx + 0.5            # never above the (well-estimated) marginal
+
+    bound = vae.iwae(x, k=5).mean()
+    bound.backward()
+    assert vae.encoder.mu.weight.grad.abs().sum() > 0
+    assert vae.decoder.out.weight.grad.abs().sum() > 0

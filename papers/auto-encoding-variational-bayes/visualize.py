@@ -79,7 +79,8 @@ def training_curves():
     with open(RESULTS) as f:
         runs = json.load(f)
     fig, axes = plt.subplots(1, 2, figsize=(11, 3.6))
-    for key in sorted(runs, key=lambda k: int(k[1:])):
+    mlp_runs = [k for k in runs if "_" not in k]  # the paper's setup: MLP + ELBO
+    for key in sorted(mlp_runs, key=lambda k: int(k[1:])):
         h = runs[key]["history"]
         axes[0].plot([r["epoch"] for r in h], [r["test_elbo"] for r in h], label=f"Z = {key[1:]}")
     axes[0].set_xlabel("epoch"); axes[0].set_ylabel("test ELBO (nats)")

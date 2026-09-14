@@ -3,13 +3,16 @@ Train the VAE on binarised MNIST and track the ELBO.
 
     python train.py --z-dim 20 --epochs 30          # main model
     python train.py --z-dim 2  --epochs 30          # for the latent-manifold figure
+    python train.py --z-dim 20 --arch conv          # convolutional encoder/decoder
+    python train.py --z-dim 20 --iwae-k 5           # importance-weighted objective
 
 Binarisation: the paper models MNIST pixels as Bernoulli. We use the common
 "dynamic binarisation" scheme, sampling x ~ Bernoulli(pixel intensity) afresh for every
 minibatch, which acts as data augmentation and avoids overfitting a fixed binarised set.
 Evaluation uses the fixed intensities as Bernoulli targets (the standard practice).
 
-Writes checkpoints/vae_z{Z}.pt and appends a run record to results.json.
+Writes checkpoints/vae_{tag}.pt and appends a run record to results.json, where tag is
+z{Z} for the paper's MLP/ELBO setup, with _conv and/or _iwae{k} suffixes for variants.
 """
 
 import argparse
@@ -55,11 +58,12 @@ def train(args):
     torch.manual_seed(args.seed)
     x_train, x_test, _ = load_mnist(device)
 
-    model = VAE(784, args.h_dim, args.z_dim).to(device)
+    model = VAE(784, args.h_dim, args.z_dim, arch=args.arch).to(device)
+    tag = run_tag(args.z_dim, args.arch, args.iwae_k)
     n_params = sum(p.numel() for p in model.parameters())
     # The paper used Adagrad; Adam (same first author, one year later) is the modern default.
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
-    print(f"z_dim={args.z_dim}  h_dim={args.h_dim}  params={n_params:,}  device={device}")
+    print(f"run={tag}  params={n_params:,}  device={device}")
 
     history, t0 = [], time.time()
     for epoch in range(1, args.epochs + 1):
@@ -69,8 +73,12 @@ def train(args):
         for i in range(0, x_train.size(0), args.batch_size):
             x = x_train[perm[i : i + args.batch_size]]
             x = torch.bernoulli(x)  # dynamic binarisation
-            elbo, _, _ = model.elbo(x)
-            loss = -elbo.mean()      # maximise the bound = minimise its negative
+            if args.iwae_k > 1:
+                bound = model.iwae(x, k=args.iwae_k)
+            else:
+                bound, _, _ = model.elbo(x)
+            loss = -bound.mean()     # maximise the bound = minimise its negative
+            elbo = bound
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -85,7 +93,7 @@ def train(args):
               f"(recon {test_recon:8.2f}, KL {test_kl:6.2f}) | {rec['seconds']:5.0f}s", flush=True)
 
     os.makedirs(CKPT_DIR, exist_ok=True)
-    ckpt_path = os.path.join(CKPT_DIR, f"vae_z{args.z_dim}.pt")
+    ckpt_path = os.path.join(CKPT_DIR, f"vae_{tag}.pt")
     torch.save({"model": model.state_dict(), "args": vars(args), "history": history}, ckpt_path)
     print(f"saved {ckpt_path}")
 
@@ -93,7 +101,7 @@ def train(args):
     if os.path.exists(RESULTS):
         with open(RESULTS) as f:
             runs = json.load(f)
-    runs[f"z{args.z_dim}"] = {"config": vars(args), "parameters": n_params,
+    runs[tag] = {"config": vars(args), "parameters": n_params,
                               "final_test_elbo": history[-1]["test_elbo"],
                               "final_test_kl": history[-1]["test_kl"],
                               "minutes": (time.time() - t0) / 60, "history": history}
@@ -101,9 +109,22 @@ def train(args):
         json.dump(runs, f, indent=2)
 
 
-def load_checkpoint(z_dim, device="cpu"):
-    ckpt = torch.load(os.path.join(CKPT_DIR, f"vae_z{z_dim}.pt"), map_location=device)
-    model = VAE(784, ckpt["args"]["h_dim"], z_dim).to(device)
+def run_tag(z_dim, arch="mlp", iwae_k=1):
+    tag = f"z{z_dim}"
+    if arch != "mlp":
+        tag += f"_{arch}"
+    if iwae_k > 1:
+        tag += f"_iwae{iwae_k}"
+    return tag
+
+
+def load_checkpoint(tag, device="cpu"):
+    """tag: e.g. 20, "z20", "z20_conv", "z20_iwae5"."""
+    if isinstance(tag, int):
+        tag = f"z{tag}"
+    ckpt = torch.load(os.path.join(CKPT_DIR, f"vae_{tag}.pt"), map_location=device)
+    a = ckpt["args"]
+    model = VAE(784, a["h_dim"], a["z_dim"], arch=a.get("arch", "mlp")).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
     return model, ckpt
@@ -117,4 +138,6 @@ if __name__ == "__main__":
     p.add_argument("--batch-size", type=int, default=100)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--arch", choices=["mlp", "conv"], default="mlp")
+    p.add_argument("--iwae-k", type=int, default=1, help="importance samples for the IWAE objective; 1 = ELBO")
     train(p.parse_args())

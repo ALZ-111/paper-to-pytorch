@@ -419,6 +419,10 @@
       "test_log_px_iw": -97.6762890625,
       "iw_samples": 1000,
       "n_test": 2000
+    },
+    "active_units": {
+      "count": 20,
+      "total_kl": 26.80938720703125
     }
   },
   "z2": {
@@ -841,6 +845,10 @@
       "test_log_px_iw": -142.8861962890625,
       "iw_samples": 1000,
       "n_test": 2000
+    },
+    "active_units": {
+      "count": 2,
+      "total_kl": 6.539619445800781
     }
   },
   "z3": {
@@ -1103,6 +1111,10 @@
       "test_log_px_iw": -132.45910400390625,
       "iw_samples": 1000,
       "n_test": 2000
+    },
+    "active_units": {
+      "count": 3,
+      "total_kl": 8.265070915222168
     }
   },
   "z5": {
@@ -1365,6 +1377,10 @@
       "test_log_px_iw": -117.54668115234375,
       "iw_samples": 1000,
       "n_test": 2000
+    },
+    "active_units": {
+      "count": 5,
+      "total_kl": 12.260354995727539
     }
   },
   "z10": {
@@ -1627,6 +1643,10 @@
       "test_log_px_iw": -102.56142578125,
       "iw_samples": 1000,
       "n_test": 2000
+    },
+    "active_units": {
+      "count": 10,
+      "total_kl": 19.39492416381836
     }
   },
   "z200": {
@@ -1889,6 +1909,10 @@
       "test_log_px_iw": -99.43727099609374,
       "iw_samples": 1000,
       "n_test": 2000
+    },
+    "active_units": {
+      "count": 38,
+      "total_kl": 29.80512046813965
     }
   }
 }

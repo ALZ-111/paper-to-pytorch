@@ -5,6 +5,8 @@ Train the VAE on binarised MNIST and track the ELBO.
     python train.py --z-dim 2  --epochs 30          # for the latent-manifold figure
     python train.py --z-dim 20 --arch conv          # convolutional encoder/decoder
     python train.py --z-dim 20 --iwae-k 5           # importance-weighted objective
+    python train.py --z-dim 20 --beta 4             # beta-VAE
+    python train.py --z-dim 20 --kl-warmup 10       # anneal beta 0 -> 1 over 10 epochs
 
 Binarisation: the paper models MNIST pixels as Bernoulli. We use the common
 "dynamic binarisation" scheme, sampling x ~ Bernoulli(pixel intensity) afresh for every
@@ -59,7 +61,7 @@ def train(args):
     x_train, x_test, _ = load_mnist(device)
 
     model = VAE(784, args.h_dim, args.z_dim, arch=args.arch).to(device)
-    tag = run_tag(args.z_dim, args.arch, args.iwae_k)
+    tag = run_tag(args.z_dim, args.arch, args.iwae_k, args.beta, args.kl_warmup)
     n_params = sum(p.numel() for p in model.parameters())
     # The paper used Adagrad; Adam (same first author, one year later) is the modern default.
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -70,13 +72,17 @@ def train(args):
         model.train()
         perm = torch.randperm(x_train.size(0), device=device)
         epoch_elbo, n_batches = 0.0, 0
+        # KL warm-up (Bowman et al. 2016 / Sonderby et al. 2016): ramp the KL weight
+        # from 0 to beta over the first kl_warmup epochs so the decoder learns to use
+        # z before the KL term can push the posterior onto the prior.
+        beta = args.beta * min(1.0, epoch / args.kl_warmup) if args.kl_warmup > 0 else args.beta
         for i in range(0, x_train.size(0), args.batch_size):
             x = x_train[perm[i : i + args.batch_size]]
             x = torch.bernoulli(x)  # dynamic binarisation
             if args.iwae_k > 1:
                 bound = model.iwae(x, k=args.iwae_k)
             else:
-                bound, _, _ = model.elbo(x)
+                bound, _, _ = model.elbo(x, beta=beta)
             loss = -bound.mean()     # maximise the bound = minimise its negative
             elbo = bound
             opt.zero_grad()
@@ -109,12 +115,16 @@ def train(args):
         json.dump(runs, f, indent=2)
 
 
-def run_tag(z_dim, arch="mlp", iwae_k=1):
+def run_tag(z_dim, arch="mlp", iwae_k=1, beta=1.0, kl_warmup=0):
     tag = f"z{z_dim}"
     if arch != "mlp":
         tag += f"_{arch}"
     if iwae_k > 1:
         tag += f"_iwae{iwae_k}"
+    if beta != 1.0:
+        tag += f"_beta{beta:g}"
+    if kl_warmup > 0:
+        tag += f"_warmup{kl_warmup}"
     return tag
 
 
@@ -140,4 +150,6 @@ if __name__ == "__main__":
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--arch", choices=["mlp", "conv"], default="mlp")
     p.add_argument("--iwae-k", type=int, default=1, help="importance samples for the IWAE objective; 1 = ELBO")
+    p.add_argument("--beta", type=float, default=1.0, help="KL weight (beta-VAE); 1 = true ELBO")
+    p.add_argument("--kl-warmup", type=int, default=0, help="epochs to anneal the KL weight from 0 to beta")
     train(p.parse_args())

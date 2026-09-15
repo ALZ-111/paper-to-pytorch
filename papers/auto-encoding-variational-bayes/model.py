@@ -138,14 +138,19 @@ class VAE(nn.Module):
         z = reparameterize(mu, logvar)
         return self.decoder(z), mu, logvar
 
-    def elbo(self, x, n_samples=1):
+    def elbo(self, x, n_samples=1, beta=1.0):
         """Per-example evidence lower bound (Equation 10 of the paper):
 
-            L(x) = E_q[log p(x|z)] - KL(q(z|x) || p(z))
+            L(x) = E_q[log p(x|z)] - beta * KL(q(z|x) || p(z))
 
         The expectation is estimated with n_samples reparameterised draws (the paper
         uses 1 per datapoint when the minibatch is large enough). Returns
         (elbo, recon_term, kl_term), each of shape (B,). Training maximises elbo.mean().
+
+        beta = 1 is the true bound. beta > 1 (beta-VAE, Higgins et al. 2017) weights
+        the KL more, pushing the posterior towards the prior and encouraging fewer,
+        more independent active dimensions; beta < 1 weights reconstruction more.
+        Only the returned `elbo` uses beta; recon and kl are reported unweighted.
         """
         mu, logvar = self.encoder(x)
         kl = kl_standard_normal(mu, logvar)
@@ -154,7 +159,7 @@ class VAE(nn.Module):
             z = reparameterize(mu, logvar)
             recon = recon + bernoulli_log_likelihood(self.decoder(z), x)
         recon = recon / n_samples
-        return recon - kl, recon, kl
+        return recon - beta * kl, recon, kl
 
     def iwae(self, x, k=5):
         """Importance-weighted bound of Burda, Grosse & Salakhutdinov (2015), per example:

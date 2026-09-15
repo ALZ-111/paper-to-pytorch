@@ -134,3 +134,14 @@ def test_8_iwae_bound_is_tighter_than_elbo_and_differentiable():
     bound.backward()
     assert vae.encoder.mu.weight.grad.abs().sum() > 0
     assert vae.decoder.out.weight.grad.abs().sum() > 0
+
+
+def test_9_beta_weights_only_the_kl_term():
+    torch.manual_seed(0)
+    vae = m.VAE(D, H, Z)
+    x = torch.rand(B, D)
+    torch.manual_seed(1); e1, r1, k1 = vae.elbo(x, beta=1.0)
+    torch.manual_seed(1); e4, r4, k4 = vae.elbo(x, beta=4.0)
+    assert torch.allclose(r1, r4) and torch.allclose(k1, k4)   # reported terms unweighted
+    assert torch.allclose(e4, r4 - 4.0 * k4)
+    assert torch.allclose(e1 - e4, 3.0 * k1, atol=1e-3)  # cancellation: |e| ~ 500, k ~ 10

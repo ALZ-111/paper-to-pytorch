@@ -3,8 +3,9 @@
 > Vaswani, Shazeer, Parmar, Uszkoreit, Jones, Gomez, Kaiser, Polosukhin — 2017 — https://arxiv.org/abs/1706.03762
 
 A from-scratch PyTorch implementation of the original encoder–decoder Transformer,
-verified numerically against `torch.nn.Transformer` and trained to **40.7 BLEU** on
-Multi30k German→English on a laptop CPU.
+verified numerically against `torch.nn.Transformer` and trained to **41.0 BLEU** on
+Multi30k German→English on a laptop CPU, with from-scratch byte-pair encoding and
+checkpoint averaging on top of the paper's recipe.
 
 <p align="center">
   <img src="../../assets/attention/cross_attention.png" width="100%">
@@ -20,10 +21,11 @@ Multi30k German→English on a laptop CPU.
 
 | | This implementation | Reference points |
 |---|---|---|
-| **Test BLEU, beam 4** | **40.7** | 35–38 typical for small word-level models on this split |
-| Test BLEU, greedy | 40.5 | |
-| Validation BLEU (best epoch) | 41.1 | |
-| Validation perplexity | 4.65 | |
+| **Test BLEU, BPE + 5-checkpoint average, beam 4** | **41.0** | 35–38 typical for small models on this split |
+| Test BLEU, word-level, beam 4 | 40.7 | |
+| Test BLEU, word-level, greedy | 40.5 | |
+| Validation BLEU (word-level, best epoch) | 41.1 | |
+| Validation perplexity (word-level) | 4.65 | |
 | Parameters | 9.1M | 65M (paper, base model) |
 | Architecture | 3 layers, d_model 256, 8 heads, d_ff 1024 | 6 layers, 512, 8, 2048 |
 | Training | 20 epochs, 72 min, 4-core Intel i5 CPU | 12 h, 8× P100 GPUs (WMT14) |
@@ -34,6 +36,38 @@ much harder WMT14 En–De benchmark and is not comparable.
 
 <p align="center"><img src="../../assets/attention/training_curves.png" width="100%"></p>
 
+### Tokenisation and checkpoint averaging
+
+| Model | Test BLEU, greedy | Test BLEU, beam 4 | `<unk>` in test source |
+|---|---|---|---|
+| Word-level, best checkpoint | 40.5 | 40.7 | 3.55% of tokens |
+| BPE (8k joint merges), best checkpoint | 39.6 | 40.1 | 0 |
+| **BPE, average of epochs 16–20** | 40.2 | **41.0** | 0 |
+
+Two of the paper's ingredients that the first run skipped. [`bpe.py`](bpe.py) is byte-pair
+encoding written from scratch (Sennrich et al., 2016; the paper uses a 37k shared BPE
+vocabulary); [`average_checkpoints.py`](average_checkpoints.py) is the Section 6.1 trick of
+averaging the last five checkpoints.
+
+- **BPE alone did not raise BLEU here.** On 29k training sentences the word-level vocabulary
+  already covers 96% of test tokens, and BPE sequences are ~13% longer, so per-epoch
+  progress is a little slower. What BPE fixes is the failure mode, not the average: every
+  sentence that contained an `<unk>` now translates. *"der etwas anstarrt"* went from
+  `<unk> something` to *staring at something*.
+- **Checkpoint averaging is worth about a point.** Same model, no extra training: 40.1 → 41.0
+  BLEU with beam search. Late in a decaying-learning-rate schedule the weights orbit a good
+  basin; the mean of five orbits sits closer to its centre than any one of them.
+
+```
+DE   : ein mann mit einem orangefarbenen hut , der etwas anstarrt .
+REF  : a man in an orange hat starring at something .
+BPE  : a man in an orange hat staring at something .
+
+DE   : ein mädchen in einem karateanzug bricht ein brett mit einem tritt .
+REF  : a girl in karate uniform breaking a stick with a front kick .
+BPE  : a girl in a karate uniform is crashing a board with a kick .
+```
+
 ### Inference speed (1,000 test sentences, 4-core CPU, batch 128)
 
 | Decoder | Before | After | Change |
@@ -42,7 +76,7 @@ much harder WMT14 En–De benchmark and is not comparable.
 | Beam 4 | 96 s (one sentence at a time) | 28 s (batched + KV cache) | 3.4× |
 
 Both optimisations are verified token-for-token identical to the naive paths in
-`test_model.py`; beam BLEU is unchanged at 40.7.
+`test_model.py`; BLEU is unchanged by them.
 
 ### Correctness
 
@@ -143,9 +177,11 @@ without careful warmup; it adds one final LayerNorm per stack.
 | File | What it is |
 |---|---|
 | [`model.py`](model.py) | Every component, built bottom-up and heavily commented: scaled dot-product attention → multi-head attention → FFN → positional encoding → encoder/decoder layers → full model, plus greedy and beam-search decoding |
-| [`test_model.py`](test_model.py) | Shape and behaviour tests, one per component |
+| [`test_model.py`](test_model.py) | Shape and behaviour tests, one per component; `test_bpe.py` and `test_average.py` cover the two new modules |
 | [`test_equivalence.py`](test_equivalence.py) | Weight-transplant equivalence test against `torch.nn.Transformer` |
-| [`data.py`](data.py) | Multi30k download, tokenisation, vocab, token-count batching |
+| [`data.py`](data.py) | Multi30k download, word or BPE tokenisation, vocab, token-count batching |
+| [`bpe.py`](bpe.py) | Byte-pair encoding from scratch with an indexed learner (8k merges in 47 s) |
+| [`average_checkpoints.py`](average_checkpoints.py) | Mean of the last N checkpoints (Section 6.1) |
 | [`bleu.py`](bleu.py) | Corpus BLEU from the definition |
 | [`translate.py`](translate.py) | Training with the paper's recipe (Noam schedule, Adam β₂ = 0.98, label smoothing 0.1, weight tying), evaluation, and a demo command |
 | [`train.py`](train.py) | Toy sequence-reversal task, trains in 40 s |
@@ -158,10 +194,14 @@ without careful warmup; it adds one final LayerNorm per stack.
 ```bash
 pip install torch matplotlib requests pytest
 
-python -m pytest test_model.py test_equivalence.py -v   # 13 tests, ~8 s
+python -m pytest test_model.py test_equivalence.py test_bpe.py test_average.py -v   # 21 tests
 python train.py                                         # toy task, ~40 s on CPU
-python translate.py train                               # Multi30k, ~70 min on CPU
+python translate.py train                               # Multi30k word-level, ~70 min on CPU
 python translate.py evaluate --beam 4                   # test BLEU, greedy and beam
+python translate.py train --tokenizer bpe --keep-last 5 # BPE run, keeps epoch checkpoints
+python average_checkpoints.py checkpoints/multi30k_bpe_epoch1[6-9].pt checkpoints/multi30k_bpe_epoch20.pt \
+    --out checkpoints/multi30k_bpe_avg5.pt
+python translate.py evaluate --tokenizer bpe --checkpoint checkpoints/multi30k_bpe_avg5.pt
 python translate.py demo "ein hund läuft durch den schnee ."
 python visualize.py                                     # regenerate figures
 ```
@@ -191,6 +231,9 @@ Checkpoints go to `checkpoints/` (git-ignored).
   already covered. See the ablation in `notebook.ipynb`.
 - **Cross-attention sharpens with depth.** Mean entropy drops from 1.83 nats (layer 1) to
   0.59 (layer 3) against a uniform baseline of 2.48.
+- **Fix the failure mode, then measure the average.** BPE didn't move BLEU on this corpus
+  but removed every `<unk>`; checkpoint averaging moved BLEU by a point for zero training
+  cost. Neither shows up in the loss curve, which is why the paper reports both separately.
 - **The Noam schedule's peak learning rate depends on warmup.** With only ~180 steps per
   epoch, warmup 400 and factor 0.5 gave a peak of 1.6e-3; the default factor of 1.0
   overshot and BLEU dipped exactly when the rate peaked.
@@ -200,5 +243,7 @@ Checkpoints go to `checkpoints/` (git-ignored).
 > Implemented the Transformer (Vaswani et al., 2017) from scratch in PyTorch — multi-head
 > attention, sinusoidal positional encoding, encoder–decoder stacks, beam search — and
 > verified it matches `torch.nn.Transformer` to 1e-5 via weight transplant. Trained a 9M-parameter
-> model to 40.7 BLEU on Multi30k De→En in 72 minutes on a laptop CPU; diagnosed and fixed a
-> 5× training slowdown caused by embedding initialisation using an ablation study.
+> model to 41.0 BLEU on Multi30k De→En on a laptop CPU with from-scratch byte-pair encoding
+> and checkpoint averaging; implemented KV-cache and batched beam search for 4.4×/3.4× faster
+> inference; diagnosed and fixed a 5× training slowdown caused by embedding initialisation
+> using an ablation study.

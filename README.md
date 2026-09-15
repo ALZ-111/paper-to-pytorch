@@ -12,8 +12,8 @@ Each folder in `papers/` contains a clean, well-commented implementation of a la
 
 | # | Paper | Year | Topic | Result |
 |---|-------|------|-------|--------|
-| 1 | [Attention Is All You Need](papers/attention-is-all-you-need) | 2017 | Transformers | 40.7 BLEU on Multi30k De→En from scratch, verified against `nn.Transformer` |
-| 2 | [Auto-Encoding Variational Bayes](papers/auto-encoding-variational-bayes) | 2013 | VAE | log p(x) −97.8 on MNIST matches paper; conv variant −90.7; IWAE; latent-dim sweep with active-units analysis |
+| 1 | [Attention Is All You Need](papers/attention-is-all-you-need) | 2017 | Transformers | 41.0 BLEU on Multi30k De→En from scratch (own BPE + checkpoint averaging), verified against `nn.Transformer`; KV-cache and batched beam search |
+| 2 | [Auto-Encoding Variational Bayes](papers/auto-encoding-variational-bayes) | 2013 | VAE | log p(x) −97.8 on MNIST matches paper; conv+IWAE variant −90.1; β-VAE and latent-dim sweeps with active-units analysis |
 
 ---
 

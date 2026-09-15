@@ -75,7 +75,8 @@ paper's "no overfitting" observation, made quantitative. `active_units.py` compu
 |---|---|---|---|---|---|---|---|
 | MLP (paper, Appendix C) | ELBO | 0.82M | −102.6 | −97.7 | 4.9 | 20 | 3.4 min |
 | MLP | IWAE, k = 5 | 0.82M | −104.0 | −96.9 | 7.1 | 20 | 6.2 min |
-| **Conv encoder/decoder** | ELBO | 1.69M | **−97.3** | **−90.7** | 6.7 | 15 | 17.9 min |
+| Conv encoder/decoder | ELBO | 1.69M | **−97.3** | −90.7 | 6.7 | 15 | 17.9 min |
+| **Conv encoder/decoder** | IWAE, k = 5 (30 ep) | 1.69M | −101.6 | **−90.1** | 11.5 | 19 | 49 min |
 
 - **Convolutions are worth 7 nats.** Two stride-2 convs and their transposed mirror beat
   the 500-unit MLP by a wide margin at the same latent size, while using *fewer* active
@@ -86,6 +87,32 @@ paper's "no overfitting" observation, made quantitative. `active_units.py` compu
   signature: the IWAE encoder learns a broader posterior that the single-sample bound
   penalises but the importance-weighted estimate rewards. The effect size matches the
   ~1-nat gains the IWAE paper reports for k = 5 on MNIST.
+
+### The KL weight: β-VAE and KL warm-up
+
+All runs Z = 20, MLP, 30 epochs (so the baseline row is the paper-setup model at epoch 30,
+not its final 50-epoch value).
+
+| Run | test ELBO (β = 1) | recon | KL | log p(x) | active units |
+|---|---|---|---|---|---|
+| β = 0.5 | −107.1 | −71.1 | 36.5 | −102.0 | 20 |
+| **β = 1 (baseline)** | **−103.7** | −76.7 | 27.0 | −97.7 † | 20 |
+| β = 2 | −106.4 | −88.8 | 17.7 | −98.8 | 20 |
+| β = 4 | −117.4 | −107.5 | 9.8 | −105.2 | 13 |
+| β = 1, KL warm-up 10 epochs | −103.9 | −76.9 | 27.3 | −99.0 | 20 |
+
+† log p(x) for the baseline is from its 50-epoch checkpoint; the others are 30-epoch models.
+
+- **β = 1 is the sweet spot for likelihood**, as it should be: it is the only setting whose
+  training objective is a bound on log p(x). β < 1 buys 5.6 nats of reconstruction for 9.5
+  nats of KL; β > 1 does the reverse and starts switching dimensions off (13 active at β = 4).
+  That trade is exactly what β-VAE sells for disentanglement, and what it costs in density.
+- **KL warm-up changes nothing here.** With a 20-d MLP on MNIST there is no posterior
+  collapse to prevent, so annealing β from 0 just delays training. Warm-up matters for
+  strong autoregressive decoders, which this model is not.
+- **Conv + IWAE (k = 5), 30 epochs: log p(x) = −90.1**, the best number in this folder, with
+  19 active units versus the conv ELBO model's 15. The importance-weighted objective keeps
+  more of the latent space in use.
 
 ### Samples and reconstructions
 
@@ -158,7 +185,7 @@ Always ≥ the ELBO in expectation and tighter as L grows; computed with `logsum
 | File | What it is |
 |---|---|
 | [`model.py`](model.py) | MLP and conv encoders/decoders, reparameterization, closed-form KL, ELBO, IWAE bound, importance-sampled log p(x), sampling and reconstruction, all commented against the paper's sections |
-| [`test_model.py`](test_model.py) | Eight tests: shapes; analytic KL vs Monte Carlo; gradient flow and sample statistics through the reparameterization; Bernoulli likelihood; log p(x) ≥ ELBO; ELBO rises with training; conv architecture; IWAE bound ordering L₁ = ELBO ≤ L₁₀ ≤ log p(x) |
+| [`test_model.py`](test_model.py) | Nine tests: shapes; analytic KL vs Monte Carlo; gradient flow and sample statistics through the reparameterization; Bernoulli likelihood; log p(x) ≥ ELBO; ELBO rises with training; conv architecture; IWAE bound ordering L₁ = ELBO ≤ L₁₀ ≤ log p(x); β weights only the KL |
 | [`train.py`](train.py) | MNIST training with per-epoch ELBO, reconstruction and KL |
 | [`evaluate.py`](evaluate.py) | Importance-weighted log p(x) for every trained model |
 | [`active_units.py`](active_units.py) | Active-unit count and per-dimension KL for every trained model |
@@ -168,12 +195,14 @@ Always ≥ the ELBO in expectation and tighter as L grows; computed with `logsum
 ## Running it
 
 ```bash
-python -m pytest test_model.py -v                 # 8 tests, ~10 s
+python -m pytest test_model.py -v                 # 9 tests, ~12 s
 python train.py --z-dim 20 --epochs 50            # paper's model, 3.4 min on CPU
 python train.py --z-dim 2  --epochs 50            # for the manifold figure
 for z in 3 5 10 200; do python train.py --z-dim $z --epochs 30; done
 python train.py --z-dim 20 --arch conv --epochs 50    # conv variant, 18 min
 python train.py --z-dim 20 --iwae-k 5 --epochs 50     # IWAE variant, 6 min
+for b in 0.5 2 4; do python train.py --z-dim 20 --beta $b --epochs 30; done   # beta-VAE sweep
+python train.py --z-dim 20 --kl-warmup 10 --epochs 30                        # KL annealing
 python evaluate.py --n-test 2000 --samples 1000   # ~5 min for all eight models
 python active_units.py
 python visualize.py
@@ -187,6 +216,10 @@ python visualize.py
   barely above Z = 20's 27, because only 38 dimensions are active: the encoder drives the
   variance of the other 162 to 1 and their mean to 0, paying zero KL for them. This is why
   the model does not overfit as Z grows.
+- **The KL weight is a dial between density and compression.** β is a Lagrange multiplier
+  on the rate term: lowering it spends KL on reconstruction, raising it prunes dimensions.
+  Only β = 1 is a likelihood bound, and it wins on log p(x); every other setting is buying
+  something else with nats.
 - **A tighter training bound is not a better ELBO.** The IWAE model has the best MLP
   log p(x) and the worst MLP ELBO at Z = 20. Which number you optimise changes what the
   encoder learns; compare models on log p(x), not on the bound they were trained with.

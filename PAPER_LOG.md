@@ -24,5 +24,5 @@ Tracking papers I've read, am implementing, or plan to implement.
 
 | Status | Paper | Authors | Year | Topic | Notes |
 |--------|-------|---------|------|-------|-------|
-| ✅ | Attention Is All You Need | Vaswani et al. | 2017 | Transformers | Full encoder–decoder; 40.7 test BLEU (beam 4) on Multi30k De→En, 9.1M params, 72 min CPU; matches `nn.Transformer` to 1e-5 (2026-09-07 → 09-09) |
-| ✅ | Auto-Encoding Variational Bayes | Kingma & Welling | 2013 | VAE | MNIST log p(x) −97.8 (IW, 5k samples) at Z=20, matches paper; Z sweep 2–200 with active-units analysis; conv variant −90.7, IWAE k=5 −96.9 (2026-09-13 → 09-14) |
+| ✅ | Attention Is All You Need | Vaswani et al. | 2017 | Transformers | Full encoder–decoder; 41.0 test BLEU (BPE + 5-ckpt average, beam 4) on Multi30k De→En, 9.1M params, CPU; matches `nn.Transformer` to 1e-5; KV-cache, batched beam (2026-09-07 → 09-15) |
+| ✅ | Auto-Encoding Variational Bayes | Kingma & Welling | 2013 | VAE | MNIST log p(x) −97.8 (IW, 5k samples) at Z=20, matches paper; Z sweep 2–200 with active-units analysis; conv −90.7, conv+IWAE −90.1, β-VAE sweep (2026-09-13 → 09-15) |

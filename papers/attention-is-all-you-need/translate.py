@@ -19,13 +19,23 @@ import torch
 import torch.nn as nn
 
 from bleu import corpus_bleu
-from data import BOS, EOS, PAD, batches_by_length, collate, load_multi30k, tokenize
+from data import (BOS, EOS, PAD, DATA_DIR, batches_by_length, collate, load_multi30k,
+                  to_words, tokenize)
+from bpe import BPE
 from model import Transformer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CKPT_DIR = os.path.join(HERE, "checkpoints")
-BEST_CKPT = os.path.join(CKPT_DIR, "multi30k_best.pt")
 RESULTS = os.path.join(HERE, "results.json")
+
+
+def ckpt_path(tokenizer, name="best"):
+    """Word-level run keeps its original file names; BPE run is namespaced."""
+    prefix = "multi30k" if tokenizer == "word" else f"multi30k_{tokenizer}"
+    return os.path.join(CKPT_DIR, f"{prefix}_{name}.pt")
+
+
+BEST_CKPT = ckpt_path("word")
 
 
 def get_device():
@@ -79,8 +89,10 @@ def translate_corpus(model, pairs, tgt_vocab, device, beam=0, batch_size=128, ma
 
 
 def bleu_on(model, pairs, tgt_vocab, device, beam=0):
-    hyps = translate_corpus(model, pairs, tgt_vocab, device, beam=beam)
-    refs = [tgt_vocab.decode(t) for _, t in pairs]
+    """BLEU on words: BPE pieces are joined back into words before scoring so the
+    number is comparable across tokenizers."""
+    hyps = [to_words(h) for h in translate_corpus(model, pairs, tgt_vocab, device, beam=beam)]
+    refs = [to_words(tgt_vocab.decode(t)) for _, t in pairs]
     return corpus_bleu(hyps, refs), hyps
 
 
@@ -103,9 +115,10 @@ def train(args):
     torch.manual_seed(args.seed)
     print(f"device: {device}  threads: {torch.get_num_threads()}")
 
-    train_pairs, val_pairs, test_pairs, src_vocab, tgt_vocab = load_multi30k()
-    print(f"train {len(train_pairs)}  val {len(val_pairs)}  test {len(test_pairs)}  "
-          f"src vocab {len(src_vocab)}  tgt vocab {len(tgt_vocab)}")
+    train_pairs, val_pairs, test_pairs, src_vocab, tgt_vocab = load_multi30k(
+        tokenizer=args.tokenizer, bpe_merges=args.bpe_merges)
+    print(f"tokenizer {args.tokenizer}  train {len(train_pairs)}  val {len(val_pairs)}  "
+          f"test {len(test_pairs)}  src vocab {len(src_vocab)}  tgt vocab {len(tgt_vocab)}")
 
     model = build_model(args, len(src_vocab), len(tgt_vocab)).to(device)
     n_params = sum(p.numel() for p in model.parameters())
@@ -153,32 +166,41 @@ def train(args):
               f"| val BLEU {val_bleu:5.2f} | {epoch_time:4.0f}s | {rec['tokens_per_sec']:,.0f} tok/s",
               flush=True)
 
+        state = {"model": model.state_dict(), "args": vars(args), "epoch": epoch,
+                 "val_bleu": val_bleu, "src_itos": src_vocab.itos, "tgt_itos": tgt_vocab.itos}
         if val_bleu > best_bleu:
             best_bleu = val_bleu
-            torch.save({"model": model.state_dict(), "args": vars(args), "epoch": epoch,
-                        "val_bleu": val_bleu, "src_itos": src_vocab.itos,
-                        "tgt_itos": tgt_vocab.itos}, BEST_CKPT)
+            torch.save(state, ckpt_path(args.tokenizer, "best"))
             print(f"  saved best checkpoint (val BLEU {val_bleu:.2f})", flush=True)
+        if args.keep_last > 0:
+            # Per-epoch checkpoints for averaging (Section 6.1 averages the last 5).
+            torch.save(state, ckpt_path(args.tokenizer, f"epoch{epoch}"))
+            stale = ckpt_path(args.tokenizer, f"epoch{epoch - args.keep_last}")
+            if os.path.exists(stale):
+                os.remove(stale)
 
     total_time = time.time() - t_start
     print(f"training done in {total_time / 60:.1f} min; best val BLEU {best_bleu:.2f}")
     _save_results({"config": vars(args), "parameters": n_params, "device": str(device),
                    "train_minutes": total_time / 60, "history": history,
-                   "best_val_bleu_greedy": best_bleu})
+                   "best_val_bleu_greedy": best_bleu}, namespace=args.tokenizer)
 
 
-def _save_results(update):
+def _save_results(update, namespace="word"):
+    """Word-level results live at the top level (original layout); other tokenizers
+    get their own sub-dict."""
     data = {}
     if os.path.exists(RESULTS):
         with open(RESULTS) as f:
             data = json.load(f)
-    data.update(update)
+    target = data if namespace == "word" else data.setdefault(namespace, {})
+    target.update(update)
     with open(RESULTS, "w") as f:
         json.dump(data, f, indent=2)
 
 
-def load_best(device):
-    ckpt = torch.load(BEST_CKPT, map_location=device)
+def load_best(device, tokenizer="word", path=None):
+    ckpt = torch.load(path or ckpt_path(tokenizer, "best"), map_location=device)
     args = argparse.Namespace(**ckpt["args"])
     model = build_model(args, len(ckpt["src_itos"]), len(ckpt["tgt_itos"])).to(device)
     model.load_state_dict(ckpt["model"])
@@ -188,8 +210,10 @@ def load_best(device):
 
 def evaluate(args):
     device = get_device()
-    model, ckpt = load_best(device)
-    _, _, test_pairs, src_vocab, tgt_vocab = load_multi30k()
+    model, ckpt = load_best(device, args.tokenizer, path=args.checkpoint)
+    tok_args = ckpt["args"]
+    _, _, test_pairs, src_vocab, tgt_vocab = load_multi30k(
+        tokenizer=tok_args.get("tokenizer", "word"), bpe_merges=tok_args.get("bpe_merges", 8000))
     print(f"loaded epoch {ckpt['epoch']} checkpoint (val BLEU {ckpt['val_bleu']:.2f})")
 
     t0 = time.time()
@@ -198,7 +222,7 @@ def evaluate(args):
     print(f"test BLEU greedy : {greedy_bleu:.2f}  ({t_greedy:.0f}s)")
 
     if args.beam == 0:  # greedy only; beam search over 1k sentences takes minutes on CPU
-        _save_results({"test_bleu_greedy": greedy_bleu})
+        _save_results({"test_bleu_greedy": greedy_bleu}, namespace=args.tokenizer)
         return
     t0 = time.time()
     beam_bleu, beam_hyps = bleu_on(model, test_pairs, tgt_vocab, device, beam=args.beam)
@@ -208,25 +232,28 @@ def evaluate(args):
     samples = []
     for i in [0, 1, 2, 3, 4, 100, 250, 500]:
         s, t = test_pairs[i]
-        samples.append({"src": " ".join(src_vocab.decode(s)),
-                        "ref": " ".join(tgt_vocab.decode(t)),
+        samples.append({"src": " ".join(to_words(src_vocab.decode(s))),
+                        "ref": " ".join(to_words(tgt_vocab.decode(t))),
                         "greedy": " ".join(greedy_hyps[i]),
                         "beam": " ".join(beam_hyps[i])})
     for x in samples[:4]:
         print(f"\nDE   : {x['src']}\nREF  : {x['ref']}\nBEAM : {x['beam']}")
 
     _save_results({"test_bleu_greedy": greedy_bleu, "test_bleu_beam": beam_bleu,
-                   "beam_size": args.beam, "samples": samples})
+                   "beam_size": args.beam, "samples": samples}, namespace=args.tokenizer)
 
 
 def demo(args):
     device = get_device()
-    model, ckpt = load_best(device)
+    model, ckpt = load_best(device, args.tokenizer)
     src_stoi = {w: i for i, w in enumerate(ckpt["src_itos"])}
     tgt_itos = ckpt["tgt_itos"]
-    ids = [src_stoi.get(t, 3) for t in tokenize(args.sentence)]
+    toks = tokenize(args.sentence)
+    if ckpt["args"].get("tokenizer", "word") == "bpe":
+        toks = BPE.load(os.path.join(DATA_DIR, f"bpe_{ckpt['args']['bpe_merges']}.json")).encode(toks)
+    ids = [src_stoi.get(t, 3) for t in toks]
     out = model.beam_search(torch.tensor([ids], device=device), BOS, EOS, beam_size=args.beam)[0]
-    words = [tgt_itos[i] for i in out[1:] if i not in (PAD, EOS)]
+    words = to_words([tgt_itos[i] for i in out[1:] if i not in (PAD, EOS)])
     print(" ".join(words))
 
 
@@ -246,13 +273,20 @@ if __name__ == "__main__":
     t.add_argument("--lr-factor", type=float, default=1.0)
     t.add_argument("--log-every", type=int, default=100)
     t.add_argument("--seed", type=int, default=0)
+    t.add_argument("--tokenizer", choices=["word", "bpe"], default="word")
+    t.add_argument("--bpe-merges", type=int, default=8000)
+    t.add_argument("--keep-last", type=int, default=0,
+                   help="keep per-epoch checkpoints for the last N epochs (for averaging)")
 
     e = sub.add_parser("evaluate")
     e.add_argument("--beam", type=int, default=4)
+    e.add_argument("--tokenizer", choices=["word", "bpe"], default="word")
+    e.add_argument("--checkpoint", default=None, help="explicit checkpoint path (e.g. an averaged one)")
 
     d = sub.add_parser("demo")
     d.add_argument("sentence")
     d.add_argument("--beam", type=int, default=4)
+    d.add_argument("--tokenizer", choices=["word", "bpe"], default="word")
 
     args = p.parse_args()
     {"train": train, "evaluate": evaluate, "demo": demo}[args.cmd](args)

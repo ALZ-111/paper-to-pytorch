@@ -23,6 +23,8 @@ from collections import Counter
 import requests
 import torch
 
+from bpe import BPE
+
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 BASE_URL = "https://raw.githubusercontent.com/multi30k/dataset/master/data/task1/raw"
 SPLITS = {"train": "train", "val": "val", "test": "test_2016_flickr"}
@@ -79,14 +81,40 @@ class Vocab:
         return toks
 
 
-def load_multi30k(min_freq=2, max_len=50):
+def load_bpe(train_tok, num_merges):
+    """Learn (or load cached) BPE merges jointly on both languages of the training set.
+    Joint merges mean shared subwords like names and numbers get identical pieces on
+    both sides (Section 5.1 of the paper uses a shared BPE vocabulary)."""
+    path = os.path.join(DATA_DIR, f"bpe_{num_merges}.json")
+    if os.path.exists(path):
+        return BPE.load(path)
+    print(f"learning {num_merges} BPE merges (cached to {path})")
+    bpe = BPE.learn(train_tok[0] + train_tok[1], num_merges)
+    bpe.save(path)
+    return bpe
+
+
+def load_multi30k(min_freq=2, max_len=50, tokenizer="word", bpe_merges=8000):
     """Returns (train, val, test, src_vocab, tgt_vocab).
 
     Each split is a list of (src_ids, tgt_ids) where tgt_ids already includes
     BOS and EOS. Sentences longer than max_len tokens are dropped from train only.
+
+    tokenizer="word": whitespace/punctuation tokens, vocab cut at min_freq (rare and
+        unseen words become <unk>).
+    tokenizer="bpe": tokens are further split into subword pieces by a BPE model with
+        `bpe_merges` merges learned on the training set; nothing becomes <unk>.
+        Use `to_words` to turn decoded pieces back into words before scoring BLEU.
     """
     raw = {s: (_download(s, "de"), _download(s, "en")) for s in SPLITS}
     tok = {s: ([tokenize(x) for x in de], [tokenize(x) for x in en]) for s, (de, en) in raw.items()}
+
+    if tokenizer == "bpe":
+        bpe = load_bpe(tok["train"], bpe_merges)
+        tok = {s: ([bpe.encode(x) for x in de], [bpe.encode(x) for x in en]) for s, (de, en) in tok.items()}
+        min_freq = 1  # every piece is by construction frequent enough
+    elif tokenizer != "word":
+        raise ValueError(f"unknown tokenizer {tokenizer!r}")
 
     src_vocab = Vocab(tok["train"][0], min_freq)
     tgt_vocab = Vocab(tok["train"][1], min_freq)
@@ -106,6 +134,13 @@ def load_multi30k(min_freq=2, max_len=50):
         src_vocab,
         tgt_vocab,
     )
+
+
+def to_words(tokens):
+    """Undo BPE if the token list contains end-of-word markers; identity otherwise."""
+    if any(t.endswith("</w>") for t in tokens):
+        return BPE.decode(tokens)
+    return tokens
 
 
 def collate(batch):

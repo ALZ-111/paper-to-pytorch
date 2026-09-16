@@ -98,6 +98,36 @@ def test_6_elbo_improves_with_training():
     assert after > before + 50, (before, after)
 
 
+def test_10_batched_bernoulli_likelihood_matches_reference():
+    """The einsum/softplus form used by the importance sampler must equal the BCE
+    form on a repeated target, and the estimator must give the same log p(x) for the
+    same random draws as the original repeat-based implementation."""
+    torch.manual_seed(0)
+    K, x = 7, torch.rand(B, D)
+    logits = torch.randn(K, B, D) * 4  # wide range, including confident logits
+    ref = m.bernoulli_log_likelihood(logits.reshape(-1, D), x.repeat(K, 1)).view(K, B)
+    assert torch.allclose(m.bernoulli_log_likelihood_many(logits, x), ref, atol=1e-3, rtol=1e-5)
+
+    vae = m.VAE(D, H, Z)
+    torch.manual_seed(1)
+    fast = vae.log_marginal_likelihood(x, n_samples=300, chunk=100)
+    # reference: original formulation, same seed -> same eps
+    torch.manual_seed(1)
+    with torch.no_grad():
+        mu, logvar = vae.encoder(x)
+        std = torch.exp(0.5 * logvar)
+        ws = []
+        for _ in range(3):
+            eps = torch.randn(100, *mu.shape)
+            z = mu + std * eps
+            lp = m.bernoulli_log_likelihood(vae.decoder(z.view(-1, Z)), x.repeat(100, 1)).view(100, -1)
+            lpz = -0.5 * (z.pow(2) + math.log(2 * math.pi)).sum(-1)
+            lqz = -0.5 * (eps.pow(2) + math.log(2 * math.pi) + logvar).sum(-1)
+            ws.append(lp + lpz - lqz)
+        ref = torch.logsumexp(torch.cat(ws), 0) - math.log(300)
+    assert torch.allclose(fast, ref, atol=1e-3)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 

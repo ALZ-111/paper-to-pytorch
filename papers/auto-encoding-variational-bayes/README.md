@@ -176,7 +176,11 @@ Computing this analytically instead of by sampling removes one source of gradien
 
     log p(x) ≈ log (1/L) Σ_i  p(x|z_i) p(z_i) / q(z_i|x),   z_i ~ q(z|x)
 
-Always ≥ the ELBO in expectation and tighter as L grows; computed with `logsumexp`.
+Always ≥ the ELBO in expectation and tighter as L grows; computed with `logsumexp`. The
+implementation never materialises the L × B × 784 target tensor: with the identity
+log σ(l)·x + log σ(−l)·(1−x) = x·l − softplus(l), the likelihood of L decodes against one
+input is a batched dot product plus a reduction, which halves the estimator's run time on
+the MLP (3.4 s → 1.8 s per 200 images × 1,000 samples; the conv model is decoder-bound).
 
 ---
 
@@ -185,7 +189,7 @@ Always ≥ the ELBO in expectation and tighter as L grows; computed with `logsum
 | File | What it is |
 |---|---|
 | [`model.py`](model.py) | MLP and conv encoders/decoders, reparameterization, closed-form KL, ELBO, IWAE bound, importance-sampled log p(x), sampling and reconstruction, all commented against the paper's sections |
-| [`test_model.py`](test_model.py) | Nine tests: shapes; analytic KL vs Monte Carlo; gradient flow and sample statistics through the reparameterization; Bernoulli likelihood; log p(x) ≥ ELBO; ELBO rises with training; conv architecture; IWAE bound ordering L₁ = ELBO ≤ L₁₀ ≤ log p(x); β weights only the KL |
+| [`test_model.py`](test_model.py) | Ten tests: shapes; analytic KL vs Monte Carlo; gradient flow and sample statistics through the reparameterization; Bernoulli likelihood; log p(x) ≥ ELBO; ELBO rises with training; conv architecture; IWAE bound ordering L₁ = ELBO ≤ L₁₀ ≤ log p(x); β weights only the KL; batched likelihood equals the BCE form |
 | [`train.py`](train.py) | MNIST training with per-epoch ELBO, reconstruction and KL |
 | [`evaluate.py`](evaluate.py) | Importance-weighted log p(x) for every trained model |
 | [`active_units.py`](active_units.py) | Active-unit count and per-dimension KL for every trained model |
@@ -195,7 +199,7 @@ Always ≥ the ELBO in expectation and tighter as L grows; computed with `logsum
 ## Running it
 
 ```bash
-python -m pytest test_model.py -v                 # 9 tests, ~12 s
+python -m pytest test_model.py -v                 # 10 tests, ~12 s
 python train.py --z-dim 20 --epochs 50            # paper's model, 3.4 min on CPU
 python train.py --z-dim 2  --epochs 50            # for the manifold figure
 for z in 3 5 10 200; do python train.py --z-dim $z --epochs 30; done

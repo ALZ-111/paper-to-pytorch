@@ -78,6 +78,27 @@ BPE  : a girl in a karate uniform is crashing a board with a kick .
 Both optimisations are verified token-for-token identical to the naive paths in
 `test_model.py`; BLEU is unchanged by them.
 
+### Throughput ([`bench.py`](bench.py), 3-layer d = 256 model, real Multi30k batches)
+
+| Change | Train, target tok/s | Greedy inference, sentences/s |
+|---|---|---|
+| Separate Q/K/V layers, own attention | 2,233 | 163 |
+| **Fused (3D × D) QKV projection + `F.scaled_dot_product_attention`** | **2,986** | **323** |
+
+| `torch.set_num_threads` | Train tok/s | Inference sent/s |
+|---|---|---|
+| 1 | 1,123 | 165 |
+| 2 | 2,110 | 275 |
+| **4 (physical cores, torch's default)** | **2,986** | 323 |
+| 8 (hyperthreads) | 2,556 | 332 |
+
+The fused projection turns three matmuls into one for self-attention and two for
+cross-attention; the fused kernel skips materialising the (B, H, T, S) weight tensor. Both
+paths give bit-identical BLEU, and the reference attention is kept behind `set_store_attn`
+for the heatmaps. Hyperthreads do not help a matmul-bound workload: two threads fighting
+over one core's FMA units cost 14% on training. Numbers are from one machine, an Intel
+i5-1038NG7, and will differ elsewhere; `python bench.py --threads 1 2 4 8` reproduces them.
+
 ### Correctness
 
 | Check | Result |
@@ -183,6 +204,7 @@ without careful warmup; it adds one final LayerNorm per stack.
 | [`bpe.py`](bpe.py) | Byte-pair encoding from scratch with an indexed learner (8k merges in 47 s) |
 | [`average_checkpoints.py`](average_checkpoints.py) | Mean of the last N checkpoints (Section 6.1) |
 | [`bleu.py`](bleu.py) | Corpus BLEU from the definition |
+| [`bench.py`](bench.py) | Training and inference throughput, optionally across thread counts |
 | [`translate.py`](translate.py) | Training with the paper's recipe (Noam schedule, Adam β₂ = 0.98, label smoothing 0.1, weight tying), evaluation, and a demo command |
 | [`train.py`](train.py) | Toy sequence-reversal task, trains in 40 s |
 | [`notebook.ipynb`](notebook.ipynb) | Executed walkthrough: attention on a toy example, the √d_k effect, positional-encoding similarity, live translations, head entropy by layer, KV-cache timing, and a no-positional-encoding ablation |

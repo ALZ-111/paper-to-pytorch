@@ -1,0 +1,22 @@
+[
+  {
+    "threads": 1,
+    "train_tokens_per_s": 1122.5870745861848,
+    "infer_sentences_per_s": 164.96973259486043
+  },
+  {
+    "threads": 2,
+    "train_tokens_per_s": 2110.2118957341445,
+    "infer_sentences_per_s": 275.2854504414027
+  },
+  {
+    "threads": 4,
+    "train_tokens_per_s": 2986.470441228258,
+    "infer_sentences_per_s": 323.3421400997348
+  },
+  {
+    "threads": 8,
+    "train_tokens_per_s": 2556.36923170022,
+    "infer_sentences_per_s": 331.94445978857806
+  }
+]

@@ -68,6 +68,27 @@ REF  : a girl in karate uniform breaking a stick with a front kick .
 BPE  : a girl in a karate uniform is crashing a board with a kick .
 ```
 
+### Beam size and length penalty ([`decode_sweep.py`](decode_sweep.py), BPE-averaged model)
+
+| beam | α = 0 (no penalty) | α = 0.6 (paper) | α = 1.0 |
+|---|---|---|---|
+| 1 (greedy) | 40.21 | | |
+| 2 | 40.61 | **41.14** | 41.10 |
+| 4 | 40.20 | 41.03 | 41.00 |
+| 8 | 39.92 | 40.77 | 40.84 |
+| 16 | 39.84 | 40.82 | 40.94 |
+
+<p align="center"><img src="../../assets/attention/decode_sweep.png" width="100%"></p>
+
+- **Without a length penalty, a bigger beam is worse than greedy.** Raw log-probability
+  favours short hypotheses (every extra token multiplies in a number below 1), and a wider
+  beam is better at finding them: mean output length falls from 96% of the reference at
+  beam 1 to 91% at beam 16, and BLEU's brevity penalty punishes it. This is the
+  "beam search curse" of Koehn & Knowles (2017), reproduced here in one run.
+- **The paper's α = 0.6 fixes it**, and the gain saturates at beam 2–4: 41.1 at beam 2,
+  41.0 at beam 4. Beam 16 costs 5× the decode time of beam 4 for nothing.
+- α = 1.0 is as good as 0.6 on this data, so the exact value is not delicate.
+
 ### Inference speed (1,000 test sentences, 4-core CPU, batch 128)
 
 | Decoder | Before | After | Change |
@@ -205,6 +226,7 @@ without careful warmup; it adds one final LayerNorm per stack.
 | [`average_checkpoints.py`](average_checkpoints.py) | Mean of the last N checkpoints (Section 6.1) |
 | [`bleu.py`](bleu.py) | Corpus BLEU from the definition |
 | [`bench.py`](bench.py) | Training and inference throughput, optionally across thread counts |
+| [`decode_sweep.py`](decode_sweep.py) | BLEU and output length across beam sizes and length penalties |
 | [`translate.py`](translate.py) | Training with the paper's recipe (Noam schedule, Adam β₂ = 0.98, label smoothing 0.1, weight tying), evaluation, and a demo command |
 | [`train.py`](train.py) | Toy sequence-reversal task, trains in 40 s |
 | [`notebook.ipynb`](notebook.ipynb) | Executed walkthrough: attention on a toy example, the √d_k effect, positional-encoding similarity, live translations, head entropy by layer, KV-cache timing, and a no-positional-encoding ablation |
@@ -253,6 +275,9 @@ Checkpoints go to `checkpoints/` (git-ignored).
   already covered. See the ablation in `notebook.ipynb`.
 - **Cross-attention sharpens with depth.** Mean entropy drops from 1.83 nats (layer 1) to
   0.59 (layer 3) against a uniform baseline of 2.48.
+- **Beam search needs a length penalty more than it needs width.** Unpenalised, every
+  beam size above 2 scored below greedy; with α = 0.6 the best result was beam 2. The
+  decoder is well calibrated enough that width buys little, but short-output bias is real.
 - **Fix the failure mode, then measure the average.** BPE didn't move BLEU on this corpus
   but removed every `<unk>`; checkpoint averaging moved BLEU by a point for zero training
   cost. Neither shows up in the loss curve, which is why the paper reports both separately.

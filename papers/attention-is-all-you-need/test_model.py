@@ -168,5 +168,41 @@ def test_9_batched_beam_search():
         assert seq_logprob(beam) >= seq_logprob(greedy) - 1e-5
 
 
+def test_10_fused_attention_matches_reference_and_loads_legacy_weights():
+    """(a) The fused F.scaled_dot_product_attention path must equal the reference
+    implementation (store_attn=True) under padding and causal masks, in self- and
+    cross-attention, and through the KV cache. (b) Checkpoints saved with separate
+    w_q / w_k / w_v layers must load into the fused in_proj layout unchanged."""
+    torch.manual_seed(0)
+    model = m.Transformer(50, 60, d_model=D, n_layers=2, n_heads=H, d_ff=FF, dropout=0.0)
+    model.eval()
+    src = torch.randint(1, 50, (B, S)); src[0, -2:] = 0
+    tgt = torch.randint(1, 60, (B, T)); tgt[1, -1:] = 0
+    fast = model(src, tgt)
+    ref = model.set_store_attn(True)(src, tgt)
+    assert torch.allclose(fast, ref, atol=1e-5)
+    assert model.decoder.layers[0].cross_attn.attn.shape == (B, H, T, S)
+    model.set_store_attn(False)
+    g_fast = model.greedy_decode(src, 1, 59, max_len=10)
+    g_ref = model.set_store_attn(True).greedy_decode(src, 1, 59, max_len=10)
+    assert torch.equal(g_fast, g_ref)
+
+    # legacy layout -> fused layout
+    mha = m.MultiHeadAttention(D, H, dropout=0.0)
+    Dm = D
+    legacy = {
+        "w_q.weight": mha.in_proj.weight[:Dm].clone(), "w_q.bias": mha.in_proj.bias[:Dm].clone(),
+        "w_k.weight": mha.in_proj.weight[Dm:2 * Dm].clone(), "w_k.bias": mha.in_proj.bias[Dm:2 * Dm].clone(),
+        "w_v.weight": mha.in_proj.weight[2 * Dm:].clone(), "w_v.bias": mha.in_proj.bias[2 * Dm:].clone(),
+        "w_o.weight": mha.w_o.weight.clone(), "w_o.bias": mha.w_o.bias.clone(),
+    }
+    mha2 = m.MultiHeadAttention(D, H, dropout=0.0)
+    mha2.load_state_dict(legacy)
+    x = torch.randn(B, T, D)
+    mha.eval(); mha2.eval()
+    assert torch.allclose(mha(x, x, x), mha2(x, x, x), atol=1e-6)
+    assert set(mha2.state_dict()) == {"in_proj.weight", "in_proj.bias", "w_o.weight", "w_o.bias"}
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

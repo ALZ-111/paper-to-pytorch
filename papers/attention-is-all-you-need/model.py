@@ -67,23 +67,40 @@ class MultiHeadAttention(nn.Module):
     MultiHead(Q, K, V) = Concat(head_1..head_h) W^O
 
     Rather than h separate (D x Dk) projection matrices per input, we use one
-    (D x D) linear layer and reshape its output into h chunks of Dk. That is
-    mathematically identical and much faster.
+    (D x D) linear layer per Q/K/V and reshape its output into h chunks of Dk. That is
+    mathematically identical and much faster. Going one step further, the three
+    projections live in a single (3D x D) matrix `in_proj` so that self-attention
+    (query = key = value) is one matmul instead of three; cross-attention does one
+    for Q and one fused (2D x D) for K and V. This is how torch.nn.MultiheadAttention
+    stores its weights too.
+
+    The attention itself runs through torch's fused F.scaled_dot_product_attention
+    kernel unless `store_attn` is set, in which case the reference implementation
+    above is used so the softmax weights can be inspected (self.attn).
     """
 
-    def __init__(self, d_model, n_heads, dropout=0.1):
+    def __init__(self, d_model, n_heads, dropout=0.1, store_attn=False):
         super().__init__()
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
         self.d_model = d_model
         self.n_heads = n_heads
         self.d_k = d_model // n_heads
 
-        self.w_q = nn.Linear(d_model, d_model)
-        self.w_k = nn.Linear(d_model, d_model)
-        self.w_v = nn.Linear(d_model, d_model)
+        self.in_proj = nn.Linear(d_model, 3 * d_model)  # rows: [W_Q; W_K; W_V]
         self.w_o = nn.Linear(d_model, d_model)
+        self.dropout_p = dropout
         self.dropout = nn.Dropout(dropout)
-        self.attn = None  # last attention weights, kept for inspection
+        self.store_attn = store_attn
+        self.attn = None  # last attention weights when store_attn is True
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        """Accept checkpoints saved with the earlier separate w_q / w_k / w_v layers."""
+        if prefix + "w_q.weight" in state_dict:
+            state_dict[prefix + "in_proj.weight"] = torch.cat(
+                [state_dict.pop(prefix + f"w_{n}.weight") for n in "qkv"])
+            state_dict[prefix + "in_proj.bias"] = torch.cat(
+                [state_dict.pop(prefix + f"w_{n}.bias") for n in "qkv"])
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     def _split_heads(self, x):
         """(B, L, D) -> (B, H, L, Dk): carve D into H heads, put H before L so
@@ -96,6 +113,20 @@ class MultiHeadAttention(nn.Module):
         B, _, L, _ = x.shape
         # transpose makes the tensor non-contiguous, so .contiguous() before .view
         return x.transpose(1, 2).contiguous().view(B, L, self.d_model)
+
+    def _project(self, query, key, value):
+        """Q, K, V projections with as few matmuls as the inputs allow."""
+        D, W, b = self.d_model, self.in_proj.weight, self.in_proj.bias
+        if key is query and value is query:
+            q, k, v = self.in_proj(query).split(D, dim=-1)          # 1 matmul
+        else:
+            q = F.linear(query, W[:D], b[:D])
+            if key is value:
+                k, v = F.linear(key, W[D:], b[D:]).split(D, dim=-1)  # 1 fused matmul
+            else:
+                k = F.linear(key, W[D:2 * D], b[D:2 * D])
+                v = F.linear(value, W[2 * D:], b[2 * D:])
+        return q, k, v
 
     def forward(self, query, key, value, mask=None, cache=None, static_kv=False):
         """
@@ -114,19 +145,27 @@ class MultiHeadAttention(nn.Module):
           - static_kv=True (cross-attention): K/V of the encoder output never change,
             so they are projected once and reused for every step.
         """
-        q = self._split_heads(self.w_q(query))  # (B, H, T, Dk)
         if cache is not None and static_kv and "k" in cache:
+            D, W, b = self.d_model, self.in_proj.weight, self.in_proj.bias
+            q = self._split_heads(F.linear(query, W[:D], b[:D]))
             k, v = cache["k"], cache["v"]
         else:
-            k = self._split_heads(self.w_k(key))    # (B, H, S, Dk)
-            v = self._split_heads(self.w_v(value))  # (B, H, S, Dk)
+            q, k, v = self._project(query, key, value)
+            q, k, v = self._split_heads(q), self._split_heads(k), self._split_heads(v)
             if cache is not None:
                 if not static_kv and "k" in cache:
                     k = torch.cat([cache["k"], k], dim=2)
                     v = torch.cat([cache["v"], v], dim=2)
                 cache["k"], cache["v"] = k, v
 
-        out, self.attn = scaled_dot_product_attention(q, k, v, mask, self.dropout)
+        if self.store_attn:
+            out, self.attn = scaled_dot_product_attention(q, k, v, mask, self.dropout)
+        else:
+            # Fused kernel: same maths (mask True = attend, dropout on the weights),
+            # fewer memory round-trips, no (B, H, T, S) weight tensor materialised.
+            out = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=mask, dropout_p=self.dropout_p if self.training else 0.0)
+            self.attn = None
 
         return self.w_o(self._merge_heads(out))  # (B, T, D)
 
@@ -377,6 +416,14 @@ class Transformer(nn.Module):
         # parameters and regularises the model on small datasets.
         if tie_weights:
             self.generator.weight = self.decoder.embed.weight
+
+    def set_store_attn(self, flag=True):
+        """Keep softmax weights in every attention layer's .attn (for visualisation).
+        Off by default: it forces the slower reference attention path."""
+        for mod in self.modules():
+            if isinstance(mod, MultiHeadAttention):
+                mod.store_attn = flag
+        return self
 
     def encode(self, src):
         src_mask = make_pad_mask(src, self.pad_idx)

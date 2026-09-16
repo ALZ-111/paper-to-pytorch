@@ -99,6 +99,7 @@ def plot_attention_maps(sentence):
     from translate import load_best
     device = torch.device("cpu")
     model, ckpt = load_best(device)
+    model.set_store_attn(True)  # keep softmax weights for the heatmaps
     src_stoi = {w: i for i, w in enumerate(ckpt["src_itos"])}
     tgt_itos = ckpt["tgt_itos"]
 

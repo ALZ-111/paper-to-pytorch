@@ -20,11 +20,10 @@ PAD = 0
 
 
 def _copy_mha(mine: m.MultiHeadAttention, theirs: nn.MultiheadAttention):
-    """Ours keeps W_Q, W_K, W_V as separate Linear layers; torch packs them into one
-    (3D x D) in_proj_weight stacked in q, k, v order."""
+    """Both pack W_Q, W_K, W_V into one (3D x D) matrix in q, k, v order."""
     with torch.no_grad():
-        theirs.in_proj_weight.copy_(torch.cat([mine.w_q.weight, mine.w_k.weight, mine.w_v.weight]))
-        theirs.in_proj_bias.copy_(torch.cat([mine.w_q.bias, mine.w_k.bias, mine.w_v.bias]))
+        theirs.in_proj_weight.copy_(mine.in_proj.weight)
+        theirs.in_proj_bias.copy_(mine.in_proj.bias)
         theirs.out_proj.weight.copy_(mine.w_o.weight)
         theirs.out_proj.bias.copy_(mine.w_o.bias)
 

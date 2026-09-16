@@ -18,6 +18,9 @@ import time
 import torch
 import torch.nn as nn
 
+import _bootstrap  # noqa: F401  (repo root on sys.path)
+from utils import count_parameters, get_device, seed_everything
+from utils.results import update_results
 from bleu import corpus_bleu
 from data import (BOS, EOS, PAD, DATA_DIR, batches_by_length, collate, load_multi30k,
                   to_words, tokenize)
@@ -36,14 +39,6 @@ def ckpt_path(tokenizer, name="best"):
 
 
 BEST_CKPT = ckpt_path("word")
-
-
-def get_device():
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
 
 
 class NoamLR:
@@ -112,7 +107,7 @@ def eval_loss(model, pairs, criterion, device, max_tokens):
 
 def train(args):
     device = get_device()
-    torch.manual_seed(args.seed)
+    seed_everything(args.seed)
     print(f"device: {device}  threads: {torch.get_num_threads()}")
 
     train_pairs, val_pairs, test_pairs, src_vocab, tgt_vocab = load_multi30k(
@@ -121,7 +116,7 @@ def train(args):
           f"test {len(test_pairs)}  src vocab {len(src_vocab)}  tgt vocab {len(tgt_vocab)}")
 
     model = build_model(args, len(src_vocab), len(tgt_vocab)).to(device)
-    n_params = sum(p.numel() for p in model.parameters())
+    n_params = count_parameters(model)
     print(f"parameters: {n_params:,}")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9)
@@ -189,14 +184,7 @@ def train(args):
 def _save_results(update, namespace="word"):
     """Word-level results live at the top level (original layout); other tokenizers
     get their own sub-dict."""
-    data = {}
-    if os.path.exists(RESULTS):
-        with open(RESULTS) as f:
-            data = json.load(f)
-    target = data if namespace == "word" else data.setdefault(namespace, {})
-    target.update(update)
-    with open(RESULTS, "w") as f:
-        json.dump(data, f, indent=2)
+    update_results(RESULTS, update, namespace=None if namespace == "word" else namespace)
 
 
 def load_best(device, tokenizer="word", path=None):

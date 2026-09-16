@@ -19,11 +19,11 @@ Together they show why Z = 200 does not overfit: most of its dimensions are swit
 import json
 import os
 
-import torch  # before matplotlib: OpenMP runtime clash on Anaconda otherwise
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+import torch
 
+import _bootstrap  # noqa: F401
+from utils.plotting import plt, save_fig
+from utils.results import load_results, update_results
 from model import kl_standard_normal
 from train import RESULTS, load_checkpoint, load_mnist
 
@@ -47,8 +47,7 @@ def analyse(model, x, threshold=0.01):
 
 def main():
     _, x_test, _ = load_mnist("cpu")
-    with open(RESULTS) as f:
-        runs = json.load(f)
+    runs = load_results(RESULTS)
     keys = sorted(runs, key=lambda k: (int(k[1:].split("_")[0]), k))
 
     print(f"{'run':>12} {'Z':>4} {'active':>7} {'total KL':>9}  {'top-5 per-dim KL (nats)'}")
@@ -59,10 +58,8 @@ def main():
         report[key] = r
         top = " ".join(f"{v:5.2f}" for v in r["per_dim_kl"][:5])
         print(f"{key:>12} {r['z_dim']:>4} {r['active_units']:>7} {r['total_kl']:>9.2f}  {top}")
-        runs[key]["active_units"] = {"count": r["active_units"], "total_kl": r["total_kl"]}
-
-    with open(RESULTS, "w") as f:
-        json.dump(runs, f, indent=2)
+        update_results(RESULTS, {"active_units": {"count": r["active_units"], "total_kl": r["total_kl"]}},
+                       namespace=key)
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
     for key in keys:
@@ -81,9 +78,7 @@ def main():
     axes[1].set_xscale("log"); axes[1].set_yscale("log")
     axes[1].set_xlabel("Z"); axes[1].set_ylabel("active units")
     axes[1].set_title("Active units plateau far below Z"); axes[1].legend(); axes[1].grid(alpha=0.3)
-    fig.tight_layout()
-    os.makedirs(OUT, exist_ok=True)
-    fig.savefig(os.path.join(OUT, "active_units.png"), dpi=130)
+    save_fig(fig, os.path.join(OUT, "active_units.png"))
     print("wrote", os.path.join(os.path.abspath(OUT), "active_units.png"))
 
 

@@ -9,14 +9,11 @@ import argparse
 import json
 import os
 
-# torch must be imported before matplotlib: Anaconda ships two OpenMP runtimes
-# (torch's libiomp5 and matplotlib's libomp) and loading them in the other order
-# aborts the process.
 import torch
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
+import _bootstrap  # noqa: F401
+from utils.plotting import plt, save_fig
+from utils.results import load_results
 from data import BOS, EOS, PAD, tokenize
 from model import PositionalEncoding
 
@@ -39,18 +36,15 @@ def plot_positional_encoding():
     axes[1].set_xlabel("position")
     axes[1].set_title("Wavelength grows with dimension")
     axes[1].legend(fontsize=7, ncol=2)
-    fig.tight_layout()
-    fig.savefig(os.path.join(OUT, "positional_encoding.png"), dpi=130)
-    plt.close(fig)
+    save_fig(fig, os.path.join(OUT, "positional_encoding.png"))
 
 
 def plot_training_curves():
-    path = os.path.join(HERE, "results.json")
-    if not os.path.exists(path):
+    results = load_results(os.path.join(HERE, "results.json"))
+    if "history" not in results:
         print("results.json not found; skipping training curves")
         return
-    with open(path) as f:
-        hist = json.load(f)["history"]
+    hist = results["history"]
     ep = [h["epoch"] for h in hist]
     fig, axes = plt.subplots(1, 3, figsize=(13, 3.6))
     axes[0].plot(ep, [h["train_loss"] for h in hist], marker="o", ms=3)
@@ -63,9 +57,7 @@ def plot_training_curves():
     for a in axes:
         a.set_xlabel("epoch")
         a.grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(os.path.join(OUT, "training_curves.png"), dpi=130)
-    plt.close(fig)
+    save_fig(fig, os.path.join(OUT, "training_curves.png"))
 
 
 def _heatmap_grid(attn, xlabels, ylabels, title, fname, layer_names=None):
@@ -90,9 +82,7 @@ def _heatmap_grid(attn, xlabels, ylabels, title, fname, layer_names=None):
             if l == 0:
                 ax.set_title(f"head {h + 1}", fontsize=8)
     fig.suptitle(title, fontsize=11)
-    fig.tight_layout()
-    fig.savefig(os.path.join(OUT, fname), dpi=130)
-    plt.close(fig)
+    save_fig(fig, os.path.join(OUT, fname))
 
 
 def plot_attention_maps(sentence):

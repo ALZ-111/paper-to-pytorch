@@ -7,12 +7,12 @@ Figures for the README. Writes PNGs to ../../assets/vae/.
 import json
 import os
 
-import torch  # before matplotlib: OpenMP runtime clash on Anaconda otherwise
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+import torch
 from scipy.stats import norm
 
+import _bootstrap  # noqa: F401
+from utils.plotting import plt, save_fig
+from utils.results import load_results
 from train import load_checkpoint, load_mnist, RESULTS
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -70,14 +70,11 @@ def latent_scatter(model2, x_test, y_test):
     ax.set_title("Posterior means μ(x) of 10k test digits in the 2-d latent space")
     ax.set_xlabel("z₁"); ax.set_ylabel("z₂")
     fig.colorbar(sc, ax=ax, ticks=range(10), label="digit")
-    fig.tight_layout()
-    fig.savefig(os.path.join(OUT, "latent_scatter.png"), dpi=130)
-    plt.close(fig)
+    save_fig(fig, os.path.join(OUT, "latent_scatter.png"))
 
 
 def training_curves():
-    with open(RESULTS) as f:
-        runs = json.load(f)
+    runs = load_results(RESULTS)
     fig, axes = plt.subplots(1, 2, figsize=(11, 3.6))
     mlp_runs = [k for k in runs if "_" not in k]  # the paper's setup: MLP + ELBO
     for key in sorted(mlp_runs, key=lambda k: int(k[1:])):
@@ -92,9 +89,7 @@ def training_curves():
         axes[1].plot(ep, [r["test_kl"] for r in h], label="KL(q‖p)")
         axes[1].set_xlabel("epoch"); axes[1].set_ylabel("nats"); axes[1].set_yscale("log")
         axes[1].set_title("Z = 20: the two terms of −ELBO"); axes[1].legend(); axes[1].grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(os.path.join(OUT, "training_curves.png"), dpi=130)
-    plt.close(fig)
+    save_fig(fig, os.path.join(OUT, "training_curves.png"))
 
 
 if __name__ == "__main__":

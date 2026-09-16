@@ -21,6 +21,8 @@ jobs:
         run: |
           pip install --index-url https://download.pytorch.org/whl/cpu torch
           pip install -r requirements.txt
+      - name: Shared utils
+        run: python -m pytest utils/test_utils.py -v
       - name: Attention Is All You Need
         working-directory: papers/attention-is-all-you-need
         run: python -m pytest test_model.py test_equivalence.py test_bpe.py test_average.py -v

@@ -13,6 +13,8 @@ import time
 
 import torch
 
+import _bootstrap  # noqa: F401
+from utils.results import load_results, update_results
 from train import RESULTS, load_checkpoint, load_mnist
 
 
@@ -33,8 +35,7 @@ def main(args):
     torch.manual_seed(0)
     _, x_test, _ = load_mnist("cpu")
     x_test = x_test[: args.n_test]
-    with open(RESULTS) as f:
-        runs = json.load(f)
+    runs = load_results(RESULTS)
 
     print(f"{'run':>12} {'test ELBO':>11} {'log p(x) (IW)':>15} {'gap':>6} {'time':>6}")
     for key in sorted(runs, key=lambda k: (int(k[1:].split("_")[0]), k)):
@@ -42,12 +43,11 @@ def main(args):
         model, _ = load_checkpoint(key)
         t0 = time.time()
         elbo, logpx = evaluate_run(model, x_test, args.samples, batch_size=100)
-        runs[key]["eval"] = {"test_elbo": elbo, "test_log_px_iw": logpx,
-                             "iw_samples": args.samples, "n_test": args.n_test}
+        update_results(RESULTS, {"eval": {"test_elbo": elbo, "test_log_px_iw": logpx,
+                                          "iw_samples": args.samples, "n_test": args.n_test}},
+                       namespace=key)
         print(f"{z:>12} {elbo:>11.2f} {logpx:>15.2f} {logpx - elbo:>6.2f} {time.time() - t0:>5.0f}s", flush=True)
 
-    with open(RESULTS, "w") as f:
-        json.dump(runs, f, indent=2)
 
 
 if __name__ == "__main__":

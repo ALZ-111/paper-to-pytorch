@@ -25,6 +25,9 @@ import time
 import torch
 from torchvision import datasets
 
+import _bootstrap  # noqa: F401  (repo root on sys.path)
+from utils import count_parameters, seed_everything
+from utils.results import update_results
 from model import VAE
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -57,12 +60,12 @@ def evaluate(model, x, batch_size=1000):
 
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    torch.manual_seed(args.seed)
+    seed_everything(args.seed)
     x_train, x_test, _ = load_mnist(device)
 
     model = VAE(784, args.h_dim, args.z_dim, arch=args.arch).to(device)
     tag = run_tag(args.z_dim, args.arch, args.iwae_k, args.beta, args.kl_warmup)
-    n_params = sum(p.numel() for p in model.parameters())
+    n_params = count_parameters(model)
     # The paper used Adagrad; Adam (same first author, one year later) is the modern default.
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     print(f"run={tag}  params={n_params:,}  device={device}")
@@ -103,16 +106,10 @@ def train(args):
     torch.save({"model": model.state_dict(), "args": vars(args), "history": history}, ckpt_path)
     print(f"saved {ckpt_path}")
 
-    runs = {}
-    if os.path.exists(RESULTS):
-        with open(RESULTS) as f:
-            runs = json.load(f)
-    runs[tag] = {"config": vars(args), "parameters": n_params,
-                              "final_test_elbo": history[-1]["test_elbo"],
-                              "final_test_kl": history[-1]["test_kl"],
-                              "minutes": (time.time() - t0) / 60, "history": history}
-    with open(RESULTS, "w") as f:
-        json.dump(runs, f, indent=2)
+    update_results(RESULTS, {tag: {"config": vars(args), "parameters": n_params,
+                                   "final_test_elbo": history[-1]["test_elbo"],
+                                   "final_test_kl": history[-1]["test_kl"],
+                                   "minutes": (time.time() - t0) / 60, "history": history}})
 
 
 def run_tag(z_dim, arch="mlp", iwae_k=1, beta=1.0, kl_warmup=0):

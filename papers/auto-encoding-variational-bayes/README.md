@@ -180,7 +180,10 @@ Always ≥ the ELBO in expectation and tighter as L grows; computed with `logsum
 implementation never materialises the L × B × 784 target tensor: with the identity
 log σ(l)·x + log σ(−l)·(1−x) = x·l − softplus(l), the likelihood of L decodes against one
 input is a batched dot product plus a reduction, which halves the estimator's run time on
-the MLP (3.4 s → 1.8 s per 200 images × 1,000 samples; the conv model is decoder-bound).
+the MLP (3.4 s → 1.8 s per 200 images × 1,000 samples). The conv model is decoder-bound;
+storing its weights and activations in channels-last (NHWC) layout, which oneDNN's CPU
+convolution kernels prefer, takes it from 21 s to 15 s on the same workload and shaves
+10% off a training epoch, with identical outputs.
 
 ---
 

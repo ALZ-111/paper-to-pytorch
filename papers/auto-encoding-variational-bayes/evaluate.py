@@ -18,7 +18,7 @@ from utils.results import load_results, update_results
 from train import RESULTS, load_checkpoint, load_mnist
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def evaluate_run(model, x, n_samples, batch_size):
     elbo_sum, iw_sum, n = 0.0, 0.0, 0
     for i in range(0, x.size(0), batch_size):

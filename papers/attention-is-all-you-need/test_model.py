@@ -216,5 +216,23 @@ def test_10_fused_attention_matches_reference_and_loads_legacy_weights():
     assert set(mha2.state_dict()) == {"in_proj.weight", "in_proj.bias", "w_o.weight", "w_o.bias"}
 
 
+def test_11_positional_table_not_saved_but_legacy_checkpoints_load(tmp_path):
+    torch.manual_seed(0)
+    model = m.Transformer(50, 60, d_model=D, n_layers=1, n_heads=H, d_ff=FF, dropout=0.0)
+    sd = model.state_dict()
+    assert not any(k.endswith(".pe") for k in sd)
+    # A checkpoint written by the old code carries the table under encoder.pos.pe etc.
+    legacy = dict(sd)
+    legacy["encoder.pos.pe"] = model.encoder.pos.pe.clone()
+    legacy["decoder.pos.pe"] = model.decoder.pos.pe.clone()
+    fresh = m.Transformer(50, 60, d_model=D, n_layers=1, n_heads=H, d_ff=FF, dropout=0.0)
+    fresh.load_state_dict(legacy, strict=True)
+    fresh.eval(); model.eval()
+    src = torch.randint(1, 50, (B, S)); tgt = torch.randint(1, 60, (B, T))
+    assert torch.allclose(fresh(src, tgt), model(src, tgt))
+    torch.save({"model": legacy}, tmp_path / "old.pt")
+    fresh.load_state_dict(torch.load(tmp_path / "old.pt")["model"])
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

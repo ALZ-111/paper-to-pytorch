@@ -114,18 +114,28 @@ class MultiHeadAttention(nn.Module):
         # transpose makes the tensor non-contiguous, so .contiguous() before .view
         return x.transpose(1, 2).contiguous().view(B, L, self.d_model)
 
+    def _proj_slice(self, x, lo, hi):
+        """x @ in_proj.weight[lo:hi].T + bias[lo:hi], without materialising a sub-module.
+        A dynamically quantized in_proj exposes packed int8 weights rather than a tensor,
+        so in that case the whole projection is computed and sliced (the extra columns
+        are cheap next to the int8 speedup)."""
+        W = getattr(self.in_proj, "weight", None)
+        if torch.is_tensor(W):
+            return F.linear(x, W[lo:hi], self.in_proj.bias[lo:hi])
+        return self.in_proj(x)[..., lo:hi]
+
     def _project(self, query, key, value):
         """Q, K, V projections with as few matmuls as the inputs allow."""
-        D, W, b = self.d_model, self.in_proj.weight, self.in_proj.bias
+        D = self.d_model
         if key is query and value is query:
             q, k, v = self.in_proj(query).split(D, dim=-1)          # 1 matmul
         else:
-            q = F.linear(query, W[:D], b[:D])
+            q = self._proj_slice(query, 0, D)
             if key is value:
-                k, v = F.linear(key, W[D:], b[D:]).split(D, dim=-1)  # 1 fused matmul
+                k, v = self._proj_slice(key, D, 3 * D).split(D, dim=-1)  # 1 fused matmul
             else:
-                k = F.linear(key, W[D:2 * D], b[D:2 * D])
-                v = F.linear(value, W[2 * D:], b[2 * D:])
+                k = self._proj_slice(key, D, 2 * D)
+                v = self._proj_slice(value, 2 * D, 3 * D)
         return q, k, v
 
     def forward(self, query, key, value, mask=None, cache=None, static_kv=False):
@@ -146,8 +156,7 @@ class MultiHeadAttention(nn.Module):
             so they are projected once and reused for every step.
         """
         if cache is not None and static_kv and "k" in cache:
-            D, W, b = self.d_model, self.in_proj.weight, self.in_proj.bias
-            q = self._split_heads(F.linear(query, W[:D], b[:D]))
+            q = self._split_heads(self._proj_slice(query, 0, self.d_model))
             k, v = cache["k"], cache["v"]
         else:
             q, k, v = self._project(query, key, value)
@@ -221,9 +230,16 @@ class PositionalEncoding(nn.Module):
         pe[:, 0::2] = torch.sin(position * div_term)  # even dims
         pe[:, 1::2] = torch.cos(position * div_term)  # odd dims
 
-        # register_buffer: saved with the model and moved by .to(device),
-        # but not a trainable parameter.
-        self.register_buffer("pe", pe.unsqueeze(0))  # (1, max_len, D)
+        # register_buffer: moved by .to(device) but not a trainable parameter.
+        # persistent=False keeps it out of state_dict: it is a pure function of
+        # (max_len, d_model) and can be rebuilt, and at 5000 x 256 floats it was
+        # 5 MB per stack, a quarter of every checkpoint.
+        self.register_buffer("pe", pe.unsqueeze(0), persistent=False)  # (1, max_len, D)
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        """Older checkpoints stored the table; drop it rather than fail strict loading."""
+        state_dict.pop(prefix + "pe", None)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     def forward(self, x, offset=0):
         """x: (B, T, D) token embeddings -> (B, T, D) with positions added.

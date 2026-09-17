@@ -32,9 +32,12 @@ CKPT_DIR = os.path.join(HERE, "checkpoints")
 RESULTS = os.path.join(HERE, "results.json")
 
 
-def ckpt_path(tokenizer, name="best"):
-    """Word-level run keeps its original file names; BPE run is namespaced."""
+def ckpt_path(tokenizer, name="best", variant=""):
+    """Word-level run keeps its original file names; BPE run is namespaced; a
+    variant tag (e.g. 'prenorm') is appended after the tokenizer."""
     prefix = "multi30k" if tokenizer == "word" else f"multi30k_{tokenizer}"
+    if variant:
+        prefix += f"_{variant}"
     return os.path.join(CKPT_DIR, f"{prefix}_{name}.pt")
 
 
@@ -64,6 +67,7 @@ def build_model(args, src_vocab_size, tgt_vocab_size):
         src_vocab_size, tgt_vocab_size,
         d_model=args.d_model, n_layers=args.layers, n_heads=args.heads,
         d_ff=args.d_ff, dropout=args.dropout, pad_idx=PAD, tie_weights=True,
+        pre_norm=getattr(args, "pre_norm", False),
     )
 
 
@@ -71,15 +75,22 @@ def build_model(args, src_vocab_size, tgt_vocab_size):
 def translate_corpus(model, pairs, tgt_vocab, device, beam=0, batch_size=128, max_len=60):
     """Decode every source sentence in `pairs`. Returns list of token lists."""
     model.eval()
-    hyps = []
-    for i in range(0, len(pairs), batch_size):
-        src, _ = collate(pairs[i : i + batch_size])
+    # Batch sentences of similar length together: less padding per batch, and the
+    # early-exit in the decoders fires for a whole batch at nearly the same step.
+    # Each sentence's result is independent of its batch-mates (the source mask
+    # handles padding), so this only changes speed, not output.
+    order = sorted(range(len(pairs)), key=lambda i: len(pairs[i][0]))
+    hyps = [None] * len(pairs)
+    for i in range(0, len(order), batch_size):
+        idx = order[i : i + batch_size]
+        src, _ = collate([pairs[j] for j in idx])
         src = src.to(device)
         if beam > 0:
             outs = model.beam_search(src, BOS, EOS, beam_size=beam, max_len=max_len)
         else:
             outs = model.greedy_decode(src, BOS, EOS, max_len=max_len).tolist()
-        hyps.extend(tgt_vocab.decode(row) for row in outs)
+        for j, row in zip(idx, outs):
+            hyps[j] = tgt_vocab.decode(row)
     return hyps
 
 
@@ -165,12 +176,12 @@ def train(args):
                  "val_bleu": val_bleu, "src_itos": src_vocab.itos, "tgt_itos": tgt_vocab.itos}
         if val_bleu > best_bleu:
             best_bleu = val_bleu
-            torch.save(state, ckpt_path(args.tokenizer, "best"))
+            torch.save(state, ckpt_path(args.tokenizer, "best", args.variant))
             print(f"  saved best checkpoint (val BLEU {val_bleu:.2f})", flush=True)
         if args.keep_last > 0:
             # Per-epoch checkpoints for averaging (Section 6.1 averages the last 5).
-            torch.save(state, ckpt_path(args.tokenizer, f"epoch{epoch}"))
-            stale = ckpt_path(args.tokenizer, f"epoch{epoch - args.keep_last}")
+            torch.save(state, ckpt_path(args.tokenizer, f"epoch{epoch}", args.variant))
+            stale = ckpt_path(args.tokenizer, f"epoch{epoch - args.keep_last}", args.variant)
             if os.path.exists(stale):
                 os.remove(stale)
 
@@ -178,7 +189,8 @@ def train(args):
     print(f"training done in {total_time / 60:.1f} min; best val BLEU {best_bleu:.2f}")
     _save_results({"config": vars(args), "parameters": n_params, "device": str(device),
                    "train_minutes": total_time / 60, "history": history,
-                   "best_val_bleu_greedy": best_bleu}, namespace=args.tokenizer)
+                   "best_val_bleu_greedy": best_bleu},
+                  namespace=args.tokenizer + (f"_{args.variant}" if args.variant else ""))
 
 
 def _save_results(update, namespace="word"):
@@ -265,6 +277,8 @@ if __name__ == "__main__":
     t.add_argument("--bpe-merges", type=int, default=8000)
     t.add_argument("--keep-last", type=int, default=0,
                    help="keep per-epoch checkpoints for the last N epochs (for averaging)")
+    t.add_argument("--pre-norm", action="store_true", help="x + Sublayer(LayerNorm(x)) layout")
+    t.add_argument("--variant", default="", help="tag for checkpoint/results namespacing")
 
     e = sub.add_parser("evaluate")
     e.add_argument("--beam", type=int, default=4)

@@ -120,6 +120,10 @@ def test_8_kv_cache_matches_full_recompute():
     full = model.greedy_decode(src, bos_idx=1, eos_idx=59, max_len=12, use_cache=False)
     cached = model.greedy_decode(src, bos_idx=1, eos_idx=59, max_len=12, use_cache=True)
     assert torch.equal(full, cached)
+    # Rows are padded (pad_idx = 0) after their EOS and never contain tokens past it.
+    for row in cached.tolist():
+        if 59 in row:
+            assert all(t == 0 for t in row[row.index(59) + 1:])
 
     # Logit-level check: feed a fixed prefix token by token through the cache and
     # compare with one teacher-forced pass over the whole prefix.
@@ -152,6 +156,12 @@ def test_9_batched_beam_search():
         assert batched[b] == alone
     uncached = model.beam_search(src, bos_idx=1, eos_idx=59, beam_size=3, max_len=10, use_cache=False)
     assert batched == uncached
+    # Pruning: a batch where some sentences finish early must equal per-sentence decoding
+    # with a large max_len too (the early finishers leave the batch, the rest carry on).
+    long = model.beam_search(src, bos_idx=1, eos_idx=59, beam_size=3, max_len=40)
+    for b in range(4):
+        row = src[b : b + 1, : int((src[b] != 0).sum())]
+        assert long[b] == model.beam_search(row, bos_idx=1, eos_idx=59, beam_size=3, max_len=40)[0]
     for seq in batched:
         assert seq[0] == 1 and len(seq) <= 10
 
@@ -163,6 +173,8 @@ def test_9_batched_beam_search():
         lp = torch.log_softmax(model.generator(model.decode(tgt, memory, src_mask)), -1)[0]
         return sum(lp[i, tokens[i + 1]].item() for i in range(len(tokens) - 1))
     greedy = model.greedy_decode(src[1:2], bos_idx=1, eos_idx=59, max_len=10)[0].tolist()
+    if 59 in greedy:
+        greedy = greedy[: greedy.index(59) + 1]
     beam = model.beam_search(src[1:2], bos_idx=1, eos_idx=59, beam_size=8, max_len=10, length_penalty=0.0)[0]
     if greedy[-1] == 59 and beam[-1] == 59:
         assert seq_logprob(beam) >= seq_logprob(greedy) - 1e-5

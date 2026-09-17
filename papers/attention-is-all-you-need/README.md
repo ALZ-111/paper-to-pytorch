@@ -68,6 +68,28 @@ REF  : a girl in karate uniform breaking a stick with a front kick .
 BPE  : a girl in a karate uniform is crashing a board with a kick .
 ```
 
+### Pre-norm vs post-norm (same BPE data, same hyperparameters)
+
+| Layout | Val BLEU @ epoch 3 / 6 / 10 | Best val BLEU (epoch) | Test BLEU, best ckpt, beam 4 | Test BLEU, avg of 16–20, beam 4 |
+|---|---|---|---|---|
+| Post-norm (paper) | 23.3 / 32.7 / 38.6 | 39.9 (17) | 40.1 | **41.0** |
+| Pre-norm | 30.6 / 37.7 / 39.8 | 40.1 (11) | 40.3 | 40.6 |
+
+<p align="center"><img src="../../assets/attention/prenorm_vs_postnorm.png" width="100%"></p>
+
+- **Pre-norm gets there faster.** It is 5–7 BLEU ahead through the first six epochs and
+  reaches its best validation score at epoch 11 instead of 17. That is the Xiong et al. (2020)
+  result: with the residual stream un-normalised, gradients at initialisation are well scaled
+  and the model does not depend on warmup to survive its first steps.
+- **It does not get further.** Both layouts plateau at about 40 validation BLEU, and
+  pre-norm's validation perplexity starts creeping up after epoch 14, so its last-5 average
+  gains less (40.3 → 40.6) than post-norm's did (40.1 → 41.0). On a 29k-sentence corpus the
+  bottleneck is data, not optimisation; pre-norm's advantage is the training budget it saves.
+- **Tried and rejected: int8 dynamic quantization.** `torch.quantization.quantize_dynamic` on
+  the Linear layers shrinks the weights 42.8 → 27.4 MB but gave no decode speedup on this
+  i5 (no VNNI) at batch 128 and cost 0.36 BLEU (41.03 → 40.67), so it is not used. The
+  attention module tolerates it if you want to try on a CPU with int8 acceleration.
+
 ### Beam size and length penalty ([`decode_sweep.py`](decode_sweep.py), BPE-averaged model)
 
 | beam | α = 0 (no penalty) | α = 0.6 (paper) | α = 1.0 |
@@ -93,11 +115,12 @@ BPE  : a girl in a karate uniform is crashing a board with a kick .
 
 | Decoder | Before | After | Change |
 |---|---|---|---|
-| Greedy | 20.8 s (full prefix recompute) | 4.7 s (KV cache) | 4.4× |
-| Beam 4 | 96 s (one sentence at a time) | 28 s (batched + KV cache) | 3.4× |
+| Greedy | 20.8 s (full prefix recompute) | 4.7 s (KV cache) → 2.2 s (+ fused attention, finished-row pruning, length-sorted batches) | 9.5× |
+| Beam 4 | 96 s (one sentence at a time) | 28 s (batched + KV cache) → 12 s (+ fused attention, pruning, vectorised selection, sorted batches) | 8× |
 
-Both optimisations are verified token-for-token identical to the naive paths in
-`test_model.py`; BLEU is unchanged by them.
+Every step is verified token-for-token identical to the naive path in `test_model.py`;
+BLEU is unchanged by any of them. The second-stage numbers are scaled from an interleaved
+A/B taken while another job shared the CPU (greedy 7.9 → 3.7 s, beam 31 → 12.4 s).
 
 ### Throughput ([`bench.py`](bench.py), 3-layer d = 256 model, real Multi30k batches)
 
@@ -225,6 +248,7 @@ without careful warmup; it adds one final LayerNorm per stack.
 | [`bpe.py`](bpe.py) | Byte-pair encoding from scratch with an indexed learner (8k merges in 47 s) |
 | [`average_checkpoints.py`](average_checkpoints.py) | Mean of the last N checkpoints (Section 6.1) |
 | [`bleu.py`](bleu.py) | Corpus BLEU from the definition |
+| [`bpe.py`](bpe.py) heap learner | 8k merges in 7.6 s (was 52 s); identical merges |
 | [`bench.py`](bench.py) | Training and inference throughput, optionally across thread counts |
 | [`decode_sweep.py`](decode_sweep.py) | BLEU and output length across beam sizes and length penalties |
 | [`translate.py`](translate.py) | Training with the paper's recipe (Noam schedule, Adam β₂ = 0.98, label smoothing 0.1, weight tying), evaluation, and a demo command |
@@ -246,6 +270,7 @@ python translate.py train --tokenizer bpe --keep-last 5 # BPE run, keeps epoch c
 python average_checkpoints.py checkpoints/multi30k_bpe_epoch1[6-9].pt checkpoints/multi30k_bpe_epoch20.pt \
     --out checkpoints/multi30k_bpe_avg5.pt
 python translate.py evaluate --tokenizer bpe --checkpoint checkpoints/multi30k_bpe_avg5.pt
+python translate.py train --tokenizer bpe --pre-norm --variant prenorm --keep-last 5   # pre-norm comparison
 python translate.py demo "ein hund läuft durch den schnee ."
 python visualize.py                                     # regenerate figures
 ```
@@ -275,6 +300,8 @@ Checkpoints go to `checkpoints/` (git-ignored).
   already covered. See the ablation in `notebook.ipynb`.
 - **Cross-attention sharpens with depth.** Mean entropy drops from 1.83 nats (layer 1) to
   0.59 (layer 3) against a uniform baseline of 2.48.
+- **Pre-norm buys speed, not ceiling.** Same final BLEU, reached in two-thirds of the
+  epochs, and it overfits a little sooner. Worth it when compute is the constraint.
 - **Beam search needs a length penalty more than it needs width.** Unpenalised, every
   beam size above 2 scored below greedy; with α = 0.6 the best result was beam 2. The
   decoder is well calibrated enough that width buys little, but short-output bias is real.

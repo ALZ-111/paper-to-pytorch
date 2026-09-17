@@ -60,6 +60,26 @@ def plot_training_curves():
     save_fig(fig, os.path.join(OUT, "training_curves.png"))
 
 
+def plot_norm_comparison():
+    """Post-norm vs pre-norm training curves, same BPE data and hyperparameters."""
+    results = load_results(os.path.join(HERE, "results.json"))
+    runs = {"post-norm (paper)": results.get("bpe", {}).get("history"),
+            "pre-norm": results.get("bpe_prenorm", {}).get("history")}
+    if not all(runs.values()):
+        print("pre-norm or post-norm BPE history missing; skipping norm comparison")
+        return
+    fig, axes = plt.subplots(1, 2, figsize=(11, 3.6))
+    for label, hist in runs.items():
+        ep = [h["epoch"] for h in hist]
+        axes[0].plot(ep, [h["val_ppl"] for h in hist], marker="o", ms=3, label=label)
+        axes[1].plot(ep, [h["val_bleu_greedy"] for h in hist], marker="o", ms=3, label=label)
+    axes[0].set_yscale("log"); axes[0].set_title("Validation perplexity")
+    axes[1].set_title("Validation BLEU (greedy)")
+    for a in axes:
+        a.set_xlabel("epoch"); a.grid(alpha=0.3); a.legend()
+    save_fig(fig, os.path.join(OUT, "prenorm_vs_postnorm.png"))
+
+
 def _heatmap_grid(attn, xlabels, ylabels, title, fname, layer_names=None):
     """attn: (n_layers, n_heads, T, S)"""
     n_layers, n_heads = attn.shape[:2]
@@ -126,6 +146,7 @@ if __name__ == "__main__":
     args = p.parse_args()
     plot_positional_encoding()
     plot_training_curves()
+    plot_norm_comparison()
     if not args.no_model:
         plot_attention_maps(args.sentence)
     print("wrote figures to", os.path.abspath(OUT))

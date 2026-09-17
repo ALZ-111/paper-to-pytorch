@@ -467,20 +467,20 @@
       {
         "src": "ein boston terrier l\u00e4uft \u00fcber saftig - gr\u00fcnes gras vor einem wei\u00dfen zaun .",
         "ref": "a boston terrier is running on lush green grass in front of a white fence .",
-        "greedy": "a borororo dog runs across the white grass in front of a white fence .",
-        "beam": "a boston terrier runs across grass in front of a white and green fence ."
+        "greedy": "a boston terrier runs over some white and green grass in front of a white fence .",
+        "beam": "a boston terrier runs over some white and green grass in front of a white fence ."
       },
       {
         "src": "ein m\u00e4dchen in einem karateanzug bricht ein brett mit einem tritt .",
         "ref": "a girl in karate uniform breaking a stick with a front kick .",
-        "greedy": "a girl in a karate uniform is breaks a board with a kick .",
-        "beam": "a girl in a karate uniform is crashing a board with a kick ."
+        "greedy": "a girl in a karate uniform breaks a kick with a kick .",
+        "beam": "a girl in a karate uniform breaks a kick with a kick ."
       },
       {
         "src": "f\u00fcnf leute in winterjacken und mit helmen stehen im schnee mit schneemobilen im hintergrund .",
         "ref": "five people wearing winter jackets and helmets stand in the snow , with snowmobiles in the background .",
-        "greedy": "five people in winter jackets and helmets stand in the snow with snowlips in the background .",
-        "beam": "five people in winter jackets and helmets are standing in the snow with posts in the background ."
+        "greedy": "five people in winter jackets and helmets stand in the snow with snow resews in the background .",
+        "beam": "five people in winter jackets and helmets stand in the snow with snow resews in the background ."
       },
       {
         "src": "leute reparieren das dach eines hauses .",
@@ -491,20 +491,20 @@
       {
         "src": "eine gl\u00fcckliche frau bereitet in einem coffee - shop eine erfrischung zu .",
         "ref": "a happy woman is preparing a refreshment at a coffee shop .",
-        "greedy": "a happy woman is preparing a fresh shop in a coffee shop .",
-        "beam": "a happy woman is preparing a fresh shop in a coffee shop ."
+        "greedy": "a happy woman is preparing a coffee shop .",
+        "beam": "a happy woman is preparing coffee in a coffee shop ."
       },
       {
         "src": "ein junge posiert mit einem gro\u00dfen gr\u00fcnen insekt auf der nase .",
         "ref": "a boy poses with a large green insect on his nose .",
-        "greedy": "a boy poses with a large green insection on his nose .",
-        "beam": "a boy poses with a large green insection on his nose ."
+        "greedy": "a boy poses with a large green inspect his nose .",
+        "beam": "a boy is posing with a large green lance on his nose ."
       },
       {
         "src": "ein tisch voller gerahmter bilder , ein freiluftmarkt .",
         "ref": "a table full of pictures in frames , at an outdoor market .",
-        "greedy": "a table full of crawn pictures , a outdoor market .",
-        "beam": "a table full of crawn pictures , an outdoor market ."
+        "greedy": "a table full of dark framed pictures , a market .",
+        "beam": "a table full of dark framed photos , an outdoor market ."
       }
     ],
     "test_bleu_greedy_best": 39.6,
@@ -517,7 +517,9 @@
       18,
       19,
       20
-    ]
+    ],
+    "test_bleu_greedy": 40.05872924051214,
+    "test_bleu_beam": 40.60323979848442
   },
   "decode_sweep": {
     "checkpoint": "checkpoints/multi30k_bpe_avg5.pt",
@@ -629,5 +631,212 @@
         "seconds": 67.90332007408142
       }
     ]
+  },
+  "bpe_prenorm": {
+    "config": {
+      "cmd": "train",
+      "epochs": 20,
+      "d_model": 256,
+      "layers": 3,
+      "heads": 8,
+      "d_ff": 1024,
+      "dropout": 0.1,
+      "max_tokens": 2500,
+      "warmup": 400,
+      "lr_factor": 0.5,
+      "log_every": 100,
+      "seed": 0,
+      "tokenizer": "bpe",
+      "bpe_merges": 8000,
+      "keep_last": 5,
+      "pre_norm": true,
+      "variant": "prenorm"
+    },
+    "parameters": 8130038,
+    "device": "cpu",
+    "train_minutes": 348.5015077670415,
+    "history": [
+      {
+        "epoch": 1,
+        "step": 204,
+        "train_loss": 5.759939572390388,
+        "val_ppl": 42.56114003641917,
+        "val_bleu_greedy": 10.425826475978388,
+        "epoch_seconds": 169.1637670993805,
+        "tokens_per_sec": 2571.9455617490403
+      },
+      {
+        "epoch": 2,
+        "step": 408,
+        "train_loss": 4.01072359085083,
+        "val_ppl": 14.86435724984479,
+        "val_bleu_greedy": 22.96654256718223,
+        "epoch_seconds": 196.1002917289734,
+        "tokens_per_sec": 2218.660646366177
+      },
+      {
+        "epoch": 3,
+        "step": 612,
+        "train_loss": 3.341736725732392,
+        "val_ppl": 9.15639765825353,
+        "val_bleu_greedy": 30.577454133664826,
+        "epoch_seconds": 172.95914387702942,
+        "tokens_per_sec": 2515.507363457658
+      },
+      {
+        "epoch": 4,
+        "step": 816,
+        "train_loss": 2.959865282563602,
+        "val_ppl": 7.161460264428564,
+        "val_bleu_greedy": 32.7846495543461,
+        "epoch_seconds": 187.03476309776306,
+        "tokens_per_sec": 2326.198578242825
+      },
+      {
+        "epoch": 5,
+        "step": 1020,
+        "train_loss": 2.714172971014883,
+        "val_ppl": 6.589996639341004,
+        "val_bleu_greedy": 34.34767502954979,
+        "epoch_seconds": 169.5511019229889,
+        "tokens_per_sec": 2566.0700229339463
+      },
+      {
+        "epoch": 6,
+        "step": 1224,
+        "train_loss": 2.5423405076943193,
+        "val_ppl": 5.843665021110971,
+        "val_bleu_greedy": 37.70889755330759,
+        "epoch_seconds": 198.8133819103241,
+        "tokens_per_sec": 2188.3838794928065
+      },
+      {
+        "epoch": 7,
+        "step": 1428,
+        "train_loss": 2.415203965177723,
+        "val_ppl": 5.547134738611823,
+        "val_bleu_greedy": 38.6526046001433,
+        "epoch_seconds": 220.8549609184265,
+        "tokens_per_sec": 1969.9806524187527
+      },
+      {
+        "epoch": 8,
+        "step": 1632,
+        "train_loss": 2.305477722602732,
+        "val_ppl": 5.31641346208393,
+        "val_bleu_greedy": 38.765484266140376,
+        "epoch_seconds": 152.93915390968323,
+        "tokens_per_sec": 2844.791466918487
+      },
+      {
+        "epoch": 9,
+        "step": 1836,
+        "train_loss": 2.21397551835752,
+        "val_ppl": 5.279262474337355,
+        "val_bleu_greedy": 39.41719446867736,
+        "epoch_seconds": 173.80475211143494,
+        "tokens_per_sec": 2503.2687237518594
+      },
+      {
+        "epoch": 10,
+        "step": 2040,
+        "train_loss": 2.139196861023996,
+        "val_ppl": 5.162478113855823,
+        "val_bleu_greedy": 39.83037255426231,
+        "epoch_seconds": 163.58171319961548,
+        "tokens_per_sec": 2659.710498746768
+      },
+      {
+        "epoch": 11,
+        "step": 2244,
+        "train_loss": 2.0779275625359777,
+        "val_ppl": 5.268407612504719,
+        "val_bleu_greedy": 40.07869627854034,
+        "epoch_seconds": 160.90837407112122,
+        "tokens_per_sec": 2703.899051317835
+      },
+      {
+        "epoch": 12,
+        "step": 2448,
+        "train_loss": 2.019632380967047,
+        "val_ppl": 5.204713645835073,
+        "val_bleu_greedy": 39.82390437799345,
+        "epoch_seconds": 163.1810381412506,
+        "tokens_per_sec": 2666.2411574032994
+      },
+      {
+        "epoch": 13,
+        "step": 2652,
+        "train_loss": 1.9721275749159795,
+        "val_ppl": 5.2720685809534205,
+        "val_bleu_greedy": 39.115256234940645,
+        "epoch_seconds": 7562.053887844086,
+        "tokens_per_sec": 57.534633639597054
+      },
+      {
+        "epoch": 14,
+        "step": 2856,
+        "train_loss": 1.9276764053924411,
+        "val_ppl": 5.308776230925554,
+        "val_bleu_greedy": 39.65776061997346,
+        "epoch_seconds": 237.55539202690125,
+        "tokens_per_sec": 1831.4886321365027
+      },
+      {
+        "epoch": 15,
+        "step": 3060,
+        "train_loss": 1.8901368607493008,
+        "val_ppl": 5.412692605444538,
+        "val_bleu_greedy": 38.68338303204901,
+        "epoch_seconds": 175.31476616859436,
+        "tokens_per_sec": 2481.7076707708584
+      },
+      {
+        "epoch": 16,
+        "step": 3264,
+        "train_loss": 1.8553975136841045,
+        "val_ppl": 5.441198557649165,
+        "val_bleu_greedy": 39.598914939484395,
+        "epoch_seconds": 3909.225928068161,
+        "tokens_per_sec": 111.29569075968074
+      },
+      {
+        "epoch": 17,
+        "step": 3468,
+        "train_loss": 1.8243386424055286,
+        "val_ppl": 5.447863715927826,
+        "val_bleu_greedy": 39.98337123099427,
+        "epoch_seconds": 4331.604807853699,
+        "tokens_per_sec": 100.44314273803322
+      },
+      {
+        "epoch": 18,
+        "step": 3672,
+        "train_loss": 1.79682849668989,
+        "val_ppl": 5.542124060435028,
+        "val_bleu_greedy": 39.62537433367057,
+        "epoch_seconds": 1907.5836589336395,
+        "tokens_per_sec": 228.07911881737053
+      },
+      {
+        "epoch": 19,
+        "step": 3876,
+        "train_loss": 1.7720231250220655,
+        "val_ppl": 5.587966850941869,
+        "val_bleu_greedy": 39.44448709506257,
+        "epoch_seconds": 253.02980303764343,
+        "tokens_per_sec": 1719.4812420387998
+      },
+      {
+        "epoch": 20,
+        "step": 4080,
+        "train_loss": 1.747611225235696,
+        "val_ppl": 5.564837768087635,
+        "val_bleu_greedy": 39.55907020339533,
+        "epoch_seconds": 162.0953028202057,
+        "tokens_per_sec": 2684.09998581258
+      }
+    ],
+    "best_val_bleu_greedy": 40.07869627854034
   }
 }

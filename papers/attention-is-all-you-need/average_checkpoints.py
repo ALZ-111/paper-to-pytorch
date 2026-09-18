@@ -15,6 +15,9 @@ import argparse
 
 import torch
 
+import _bootstrap  # noqa: F401
+from utils.checkpoint import load_checkpoint, save_checkpoint
+
 
 def average_state_dicts(state_dicts):
     """Element-wise mean of matching float tensors; non-float buffers are taken from the
@@ -30,11 +33,14 @@ def average_state_dicts(state_dicts):
 
 
 def average_checkpoints(paths, out):
-    ckpts = [torch.load(p, map_location="cpu") for p in paths]
+    # Averaging in float32 matters even when the files store float16: the mean of N
+    # rounded values is more accurate than any of them only if the sum is accumulated
+    # at full precision. load_checkpoint restores float32, so this is handled.
+    ckpts = [load_checkpoint(p) for p in paths]
     merged = dict(ckpts[-1])
     merged["model"] = average_state_dicts([c["model"] for c in ckpts])
     merged["averaged_from"] = [c["epoch"] for c in ckpts]
-    torch.save(merged, out)
+    save_checkpoint(merged, out)
     return merged
 
 

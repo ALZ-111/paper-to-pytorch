@@ -27,6 +27,7 @@ from torchvision import datasets
 
 import _bootstrap  # noqa: F401  (repo root on sys.path)
 from utils import count_parameters, seed_everything
+from utils.checkpoint import load_checkpoint as _load_ckpt, save_checkpoint
 from utils.results import update_results
 from model import VAE
 
@@ -103,7 +104,7 @@ def train(args):
 
     os.makedirs(CKPT_DIR, exist_ok=True)
     ckpt_path = os.path.join(CKPT_DIR, f"vae_{tag}.pt")
-    torch.save({"model": model.state_dict(), "args": vars(args), "history": history}, ckpt_path)
+    save_checkpoint({"model": model.state_dict(), "args": vars(args), "history": history}, ckpt_path)
     print(f"saved {ckpt_path}")
 
     update_results(RESULTS, {tag: {"config": vars(args), "parameters": n_params,
@@ -129,7 +130,7 @@ def load_checkpoint(tag, device="cpu"):
     """tag: e.g. 20, "z20", "z20_conv", "z20_iwae5"."""
     if isinstance(tag, int):
         tag = f"z{tag}"
-    ckpt = torch.load(os.path.join(CKPT_DIR, f"vae_{tag}.pt"), map_location=device)
+    ckpt = _load_ckpt(os.path.join(CKPT_DIR, f"vae_{tag}.pt"), map_location=device)
     a = ckpt["args"]
     model = VAE(784, a["h_dim"], a["z_dim"], arch=a.get("arch", "mlp")).to(device)
     model.load_state_dict(ckpt["model"])

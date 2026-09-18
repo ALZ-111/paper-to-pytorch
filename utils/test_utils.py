@@ -48,3 +48,27 @@ def test_update_results_merges_namespaces_and_survives_missing_file(tmp_path):
     data = json.load(open(path))
     assert data == {"a": 2, "bpe": {"bleu": 40.0, "ppl": 5.0}}
     assert not os.path.exists(path + ".tmp")
+
+
+def test_checkpoint_half_precision_roundtrip(tmp_path):
+    from utils.checkpoint import load_checkpoint, save_checkpoint
+    net = nn.Sequential(nn.Linear(64, 64), nn.Embedding(10, 64))
+    state = {"model": net.state_dict(), "epoch": 7, "itos": ["a", "b"],
+             "counts": torch.arange(5)}  # non-float tensors must survive untouched
+    half = save_checkpoint(state, str(tmp_path / "h.pt"))
+    full = save_checkpoint(state, str(tmp_path / "f.pt"), half=False)
+    assert os.path.getsize(half) < 0.6 * os.path.getsize(full)
+
+    back = load_checkpoint(half)
+    assert back["epoch"] == 7 and back["itos"] == ["a", "b"]
+    assert torch.equal(back["counts"], state["counts"])
+    assert "_storage_dtype" not in back
+    for k, v in back["model"].items():
+        assert v.dtype == torch.float32
+        assert torch.allclose(v, state["model"][k], atol=1e-2, rtol=1e-2)
+    net.load_state_dict(back["model"])  # loads without dtype complaints
+
+    # A checkpoint written the old way (plain torch.save, float32) still loads.
+    torch.save(state, tmp_path / "legacy.pt")
+    old = load_checkpoint(str(tmp_path / "legacy.pt"))
+    assert torch.equal(old["model"]["0.weight"], state["model"]["0.weight"])

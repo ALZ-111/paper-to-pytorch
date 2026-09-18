@@ -1,7 +1,7 @@
 """
 Train and evaluate the Transformer on Multi30k German -> English.
 
-    python translate.py train    [--epochs 15] [--d-model 256] ...
+    python translate.py train    [--epochs 15] [--d-model 256] [--accum-steps 4] ...
     python translate.py evaluate [--beam 4]            # test-set BLEU from best checkpoint
     python translate.py demo "ein mann fährt fahrrad ."  # translate a sentence
 
@@ -20,6 +20,7 @@ import torch.nn as nn
 
 import _bootstrap  # noqa: F401  (repo root on sys.path)
 from utils import count_parameters, get_device, seed_everything
+from utils.checkpoint import load_checkpoint, save_checkpoint
 from utils.results import update_results
 from bleu import corpus_bleu
 from data import (BOS, EOS, PAD, DATA_DIR, batches_by_length, collate, load_multi30k,
@@ -144,22 +145,42 @@ def train(args):
     for epoch in range(1, args.epochs + 1):
         model.train()
         t_epoch, tok_seen, loss_sum, n_batches = time.time(), 0, 0.0, 0
+        # Gradient accumulation: run `accum_steps` minibatches before each optimizer
+        # step, so the effective batch is accum_steps x max_tokens. The paper's WMT
+        # runs use ~25k tokens per batch (Section 5.1); on this corpus 2,500 tokens
+        # per forward pass x 4 gets to a comparable scale. Each minibatch's loss is
+        # divided by accum_steps so the accumulated gradient is the mean over the
+        # whole effective batch, not the sum.
+        optimizer.zero_grad()
+        pending = 0
         for src, tgt in batches_by_length(train_pairs, args.max_tokens):
             src, tgt = src.to(device), tgt.to(device)
             # Teacher forcing: input is tgt[:-1] (starts with BOS), target is tgt[1:].
             logits = model(src, tgt[:, :-1])
             loss = criterion(logits.reshape(-1, logits.size(-1)), tgt[:, 1:].reshape(-1))
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scheduler.step()
-            step += 1
+            (loss / args.accum_steps).backward()
+            pending += 1
             tok_seen += (tgt[:, 1:] != PAD).sum().item()
             loss_sum += loss.item()
             n_batches += 1
+            if pending < args.accum_steps:
+                continue
+            # Clip the accumulated gradient, not each minibatch's: the norm that
+            # matters is the one actually applied to the weights.
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            scheduler.step()
+            optimizer.zero_grad()
+            pending = 0
+            step += 1
             if step % args.log_every == 0:
                 print(f"  step {step:5d}  loss {loss.item():.3f}  lr {scheduler.rate():.2e}  "
                       f"{tok_seen / (time.time() - t_epoch):,.0f} tok/s", flush=True)
+
+        if pending:  # leftover minibatches at the end of the epoch
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            scheduler.step()
+            optimizer.zero_grad()
+            step += 1
 
         epoch_time = time.time() - t_epoch
         val_ppl = math.exp(eval_loss(model, val_pairs, ppl_criterion, device, args.max_tokens))
@@ -176,11 +197,11 @@ def train(args):
                  "val_bleu": val_bleu, "src_itos": src_vocab.itos, "tgt_itos": tgt_vocab.itos}
         if val_bleu > best_bleu:
             best_bleu = val_bleu
-            torch.save(state, ckpt_path(args.tokenizer, "best", args.variant))
+            save_checkpoint(state, ckpt_path(args.tokenizer, "best", args.variant))
             print(f"  saved best checkpoint (val BLEU {val_bleu:.2f})", flush=True)
         if args.keep_last > 0:
             # Per-epoch checkpoints for averaging (Section 6.1 averages the last 5).
-            torch.save(state, ckpt_path(args.tokenizer, f"epoch{epoch}", args.variant))
+            save_checkpoint(state, ckpt_path(args.tokenizer, f"epoch{epoch}", args.variant))
             stale = ckpt_path(args.tokenizer, f"epoch{epoch - args.keep_last}", args.variant)
             if os.path.exists(stale):
                 os.remove(stale)
@@ -200,7 +221,7 @@ def _save_results(update, namespace="word"):
 
 
 def load_best(device, tokenizer="word", path=None):
-    ckpt = torch.load(path or ckpt_path(tokenizer, "best"), map_location=device)
+    ckpt = load_checkpoint(path or ckpt_path(tokenizer, "best"), map_location=device)
     args = argparse.Namespace(**ckpt["args"])
     model = build_model(args, len(ckpt["src_itos"]), len(ckpt["tgt_itos"])).to(device)
     model.load_state_dict(ckpt["model"])
@@ -279,6 +300,8 @@ if __name__ == "__main__":
                    help="keep per-epoch checkpoints for the last N epochs (for averaging)")
     t.add_argument("--pre-norm", action="store_true", help="x + Sublayer(LayerNorm(x)) layout")
     t.add_argument("--variant", default="", help="tag for checkpoint/results namespacing")
+    t.add_argument("--accum-steps", type=int, default=1,
+                   help="minibatches per optimizer step; effective batch = this x --max-tokens")
 
     e = sub.add_parser("evaluate")
     e.add_argument("--beam", type=int, default=4)

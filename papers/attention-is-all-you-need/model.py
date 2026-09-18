@@ -138,7 +138,7 @@ class MultiHeadAttention(nn.Module):
                 v = self._proj_slice(value, 2 * D, 3 * D)
         return q, k, v
 
-    def forward(self, query, key, value, mask=None, cache=None, static_kv=False):
+    def forward(self, query, key, value, mask=None, cache=None, static_kv=False, kv_groups=1):
         """
         query: (B, T, D)   key/value: (B, S, D)   mask: broadcastable to (B, H, T, S)
         Returns (B, T, D).
@@ -154,6 +154,11 @@ class MultiHeadAttention(nn.Module):
             Each step then costs O(t) instead of re-running the whole prefix, O(t^2).
           - static_kv=True (cross-attention): K/V of the encoder output never change,
             so they are projected once and reused for every step.
+
+        kv_groups > 1 says the query's batch is G consecutive rows per K/V row, which is
+        what beam search produces: the G beams of a sentence all attend to that one
+        sentence's encoder output. The G queries are folded into the query-position axis
+        so K/V are stored and projected once per sentence rather than once per beam.
         """
         if cache is not None and static_kv and "k" in cache:
             q = self._split_heads(self._proj_slice(query, 0, self.d_model))
@@ -167,6 +172,12 @@ class MultiHeadAttention(nn.Module):
                     v = torch.cat([cache["v"], v], dim=2)
                 cache["k"], cache["v"] = k, v
 
+        # Fold the G query rows per K/V row into the query-position axis.
+        if kv_groups > 1:
+            BG, H, T, Dk = q.shape
+            q = q.view(BG // kv_groups, kv_groups, H, T, Dk).transpose(1, 2).reshape(
+                BG // kv_groups, H, kv_groups * T, Dk)
+
         if self.store_attn:
             out, self.attn = scaled_dot_product_attention(q, k, v, mask, self.dropout)
         else:
@@ -175,6 +186,11 @@ class MultiHeadAttention(nn.Module):
             out = F.scaled_dot_product_attention(
                 q, k, v, attn_mask=mask, dropout_p=self.dropout_p if self.training else 0.0)
             self.attn = None
+
+        if kv_groups > 1:
+            B, H, GT, Dv = out.shape
+            out = out.view(B, H, kv_groups, GT // kv_groups, Dv).transpose(1, 2).reshape(
+                B * kv_groups, H, GT // kv_groups, Dv)
 
         return self.w_o(self._merge_heads(out))  # (B, T, D)
 
@@ -307,14 +323,16 @@ class DecoderLayer(nn.Module):
         self.sub2 = SublayerConnection(d_model, dropout, pre_norm)
         self.sub3 = SublayerConnection(d_model, dropout, pre_norm)
 
-    def forward(self, x, memory, tgt_mask=None, src_mask=None, cache=None):
-        """x: (B, T, D)  memory: (B, S, D) encoder output -> (B, T, D)
-        cache: {"self": {}, "cross": {}} for incremental decoding, else None."""
+    def forward(self, x, memory, tgt_mask=None, src_mask=None, cache=None, kv_groups=1):
+        """x: (B*G, T, D)  memory: (B, S, D) encoder output -> (B*G, T, D)
+        cache: {"self": {}, "cross": {}} for incremental decoding, else None.
+        kv_groups=G: x holds G rows per memory row (beam search); see MultiHeadAttention."""
         self_c = cache["self"] if cache is not None else None
         cross_c = cache["cross"] if cache is not None else None
         x = self.sub1(x, lambda x: self.self_attn(x, x, x, tgt_mask, cache=self_c))
         x = self.sub2(x, lambda x: self.cross_attn(x, memory, memory, src_mask,
-                                                   cache=cross_c, static_kv=True))
+                                                   cache=cross_c, static_kv=True,
+                                                   kv_groups=kv_groups))
         return self.sub3(x, self.ff)
 
 
@@ -373,13 +391,15 @@ class Decoder(nn.Module):
         # Pre-norm leaves the residual stream un-normalised, so normalise once at the end.
         self.final_norm = nn.LayerNorm(d_model) if pre_norm else nn.Identity()
 
-    def forward(self, tgt, memory, tgt_mask=None, src_mask=None, caches=None, offset=0):
+    def forward(self, tgt, memory, tgt_mask=None, src_mask=None, caches=None, offset=0,
+                kv_groups=1):
         """tgt: (B, T) token ids, memory: (B, S, D) -> (B, T, D)
         caches: one {"self", "cross"} dict per layer for incremental decoding, in which
         case tgt holds only the newest token(s) and offset is their first position."""
         x = self.pos(self.embed(tgt) * math.sqrt(self.d_model), offset=offset)
         for i, layer in enumerate(self.layers):
-            x = layer(x, memory, tgt_mask, src_mask, cache=caches[i] if caches else None)
+            x = layer(x, memory, tgt_mask, src_mask, cache=caches[i] if caches else None,
+                      kv_groups=kv_groups)
         return self.final_norm(x)
 
     def new_caches(self):
@@ -521,8 +541,11 @@ class Transformer(nn.Module):
         short outputs.
 
         All B sentences and their K beams are flattened into one batch of B*K rows so
-        each step is a single decoder call; the KV cache rows are re-gathered after
-        every step to follow the surviving beams. Candidate selection is fully
+        each step is a single decoder call; the self-attention cache rows are re-gathered
+        after every step to follow the surviving beams. The encoder output and its
+        cross-attention K/V stay at one row per *sentence* (kv_groups=K folds the K beams
+        into the query axis), so they are projected and stored once rather than K times.
+        Candidate selection is fully
         vectorised, and a sentence leaves the batch as soon as it has K finished
         hypotheses, so the cost tracks the mean sentence length. Padding in `src` is
         handled by the source mask, so results do not depend on batch-mates.
@@ -534,9 +557,7 @@ class Transformer(nn.Module):
         B, K, dev = src.size(0), beam_size, src.device
         neg_inf = float("-inf")
 
-        memory, src_mask = self.encode(src)
-        memory = memory.repeat_interleave(K, dim=0)      # (A*K, S, D), A = active sentences
-        src_mask = src_mask.repeat_interleave(K, dim=0)  # (A*K, 1, 1, S)
+        memory, src_mask = self.encode(src)               # (A, S, D), A = active sentences
 
         seqs = torch.full((B * K, 1), bos_idx, dtype=torch.long, device=dev)
         # Only beam 0 is live at the start, otherwise K identical copies of BOS would
@@ -552,9 +573,11 @@ class Transformer(nn.Module):
         for step in range(max_len - 1):
             A = orig.numel()
             if use_cache:
-                out = self.decoder(seqs[:, -1:], memory, None, src_mask, caches=caches, offset=step)
+                out = self.decoder(seqs[:, -1:], memory, None, src_mask, caches=caches,
+                                   offset=step, kv_groups=K)
             else:
-                out = self.decode(seqs, memory, src_mask)
+                tgt_mask = make_causal_mask(seqs.size(1), dev)
+                out = self.decoder(seqs, memory, tgt_mask, src_mask, kv_groups=K)
             log_probs = F.log_softmax(self.generator(out[:, -1]), dim=-1)  # (A*K, V)
             V = log_probs.size(-1)
 
@@ -596,6 +619,7 @@ class Transformer(nn.Module):
                 for c in caches:
                     c["self"]["k"] = c["self"]["k"][flat]
                     c["self"]["v"] = c["self"]["v"][flat]
+                    # cross K/V are per sentence, not per beam: nothing to reorder.
 
             # Retire sentences with K finished hypotheses from the active batch.
             done = n_fin >= K
@@ -605,11 +629,12 @@ class Transformer(nn.Module):
                     break
                 row_stay = stay.repeat_interleave(K)
                 orig, n_fin, scores = orig[stay], n_fin[stay], scores[stay]
-                seqs, memory, src_mask = seqs[row_stay], memory[row_stay], src_mask[row_stay]
+                seqs = seqs[row_stay]
+                memory, src_mask = memory[stay], src_mask[stay]   # one row per sentence
                 if use_cache:
                     for c in caches:
                         c["self"]["k"], c["self"]["v"] = c["self"]["k"][row_stay], c["self"]["v"][row_stay]
-                        c["cross"]["k"], c["cross"]["v"] = c["cross"]["k"][row_stay], c["cross"]["v"][row_stay]
+                        c["cross"]["k"], c["cross"]["v"] = c["cross"]["k"][stay], c["cross"]["v"][stay]
 
         # Sentences still active hit max_len: fall back to their best live beam.
         if orig.numel():

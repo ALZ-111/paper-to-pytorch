@@ -3,6 +3,8 @@
 import torch
 
 import model as m
+import _bootstrap  # noqa: F401
+from utils.checkpoint import load_checkpoint
 from average_checkpoints import average_checkpoints, average_state_dicts
 
 
@@ -29,12 +31,22 @@ def test_average_of_identical_checkpoints_is_identity_and_loads(tmp_path):
         p = tmp_path / f"epoch{e}.pt"
         torch.save({"model": net.state_dict(), "args": {}, "epoch": e}, p)
         paths.append(str(p))
-    merged = average_checkpoints(paths, str(tmp_path / "avg.pt"))
+    # half=False isolates the averaging arithmetic, which is exact for identical inputs,
+    # from checkpoint storage precision (covered by utils/test_utils.py).
+    merged = average_checkpoints(paths, str(tmp_path / "avg.pt"), half=False)
     assert merged["averaged_from"] == [1, 2, 3]
+    net.eval()
     net2 = _small(5)
-    net2.load_state_dict(torch.load(tmp_path / "avg.pt")["model"])
-    net2.eval(); net.eval()
+    net2.load_state_dict(load_checkpoint(str(tmp_path / "avg.pt"))["model"])
+    net2.eval()
     assert torch.allclose(net2(src, tgt), ref, atol=1e-6)
+
+    # The default float16 storage is lossy but far inside what the model cares about.
+    average_checkpoints(paths, str(tmp_path / "avg16.pt"))
+    net3 = _small(5)
+    net3.load_state_dict(load_checkpoint(str(tmp_path / "avg16.pt"))["model"])
+    net3.eval()
+    assert torch.allclose(net3(src, tgt), ref, atol=2e-2)
 
 
 def test_tied_weights_survive_averaging():

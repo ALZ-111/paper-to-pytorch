@@ -68,14 +68,23 @@ REF  : a girl in karate uniform breaking a stick with a front kick .
 BPE  : a girl in a karate uniform is crashing a board with a kick .
 ```
 
-### Pre-norm vs post-norm (same BPE data, same hyperparameters)
+### Three training runs, same data and budget
 
-| Layout | Val BLEU @ epoch 3 / 6 / 10 | Best val BLEU (epoch) | Test BLEU, best ckpt, beam 4 | Test BLEU, avg of 16–20, beam 4 |
-|---|---|---|---|---|
-| Post-norm (paper) | 23.3 / 32.7 / 38.6 | 39.9 (17) | 40.1 | **41.0** |
-| Pre-norm | 30.6 / 37.7 / 39.8 | 40.1 (11) | 40.3 | 40.6 |
+Each is 20 epochs of the BPE setup, differing in one thing.
 
-<p align="center"><img src="../../assets/attention/prenorm_vs_postnorm.png" width="100%"></p>
+| Run | Optimizer steps/epoch | Val BLEU @ epoch 3 / 6 / 10 | Best val BLEU (epoch) | Test BLEU, best ckpt | Test BLEU, avg of 16–20 |
+|---|---|---|---|---|---|
+| Post-norm, 2.5k-token batches (paper) | 204 | 23.3 / 32.7 / 38.6 | 39.9 (17) | 40.1 | **41.0** |
+| Pre-norm, 2.5k-token batches | 204 | 30.6 / 37.7 / 39.8 | 40.1 (11) | 40.3 | 40.6 |
+| Post-norm, 10k-token batches (accumulate 4) | 51 | 19.2 / 33.6 / 38.2 | 40.1 (15) | 40.3 | 39.8 |
+
+Test BLEU is beam 4. The accumulation run uses `--accum-steps 4`, which runs four
+minibatches before each optimizer step, so the effective batch is 10k tokens, closer to
+the ~25k the paper uses (Section 5.1). Its warmup is scaled by the same factor (400 → 100),
+which lands the Noam peak learning rate at twice the baseline's, the square-root scaling
+a 4× batch wants.
+
+<p align="center"><img src="../../assets/attention/training_variants.png" width="100%"></p>
 
 - **Pre-norm gets there faster.** It is 5–7 BLEU ahead through the first six epochs and
   reaches its best validation score at epoch 11 instead of 17. That is the Xiong et al. (2020)
@@ -85,6 +94,20 @@ BPE  : a girl in a karate uniform is crashing a board with a kick .
   pre-norm's validation perplexity starts creeping up after epoch 14, so its last-5 average
   gains less (40.3 → 40.6) than post-norm's did (40.1 → 41.0). On a 29k-sentence corpus the
   bottleneck is data, not optimisation; pre-norm's advantage is the training budget it saves.
+- **Bigger batches did not help.** The 4× effective batch starts slower (19.2 BLEU at
+  epoch 3 against the baseline's 23.3, with a quarter as many optimizer steps behind it),
+  catches up by epoch 6, and peaks marginally higher and two epochs earlier (40.1 at 15 vs
+  39.9 at 17). But it is the worst of the three after checkpoint averaging (39.8 vs 41.0):
+  its validation BLEU declines after epoch 15, so the fixed "average the last five" window
+  sits past the peak. Throughput was
+  unchanged: a batch-size sweep from 1k to 10k tokens per forward pass moved training
+  between 2,250 and 2,357 tok/s, so on this machine accumulation costs nothing and buys
+  nothing. Large-batch training is a distributed-GPU concern, and this corpus is too small
+  to need it.
+- **Averaging and the learning-rate schedule interact.** Both runs that peaked early
+  (pre-norm at 11, accumulation at 15) gained less from averaging than the run that peaked
+  at 17. Averaging a fixed last-N window assumes training is still in its plateau; when it
+  is not, the window straddles the decline.
 - **Tried and rejected: int8 dynamic quantization.** `torch.quantization.quantize_dynamic` on
   the Linear layers shrinks the weights 42.8 → 27.4 MB but gave no decode speedup on this
   i5 (no VNNI) at batch 128 and cost 0.36 BLEU (41.03 → 40.67), so it is not used. The
@@ -116,7 +139,12 @@ BPE  : a girl in a karate uniform is crashing a board with a kick .
 | Decoder | Before | After | Change |
 |---|---|---|---|
 | Greedy | 20.8 s (full prefix recompute) | 4.7 s (KV cache) → 2.2 s (+ fused attention, finished-row pruning, length-sorted batches) | 9.5× |
-| Beam 4 | 96 s (one sentence at a time) | 28 s (batched + KV cache) → 12 s (+ fused attention, pruning, vectorised selection, sorted batches) | 8× |
+| Beam 4 | 96 s (one sentence at a time) | 28 s (batched + KV cache) → 9.0 s (+ fused attention, pruning, vectorised selection, sorted batches, one cross-attention cache per sentence) | 10.7× |
+
+Beam search's cross-attention cache holds one row per *sentence* rather than one per beam:
+the K beams of a sentence all read the same encoder output, so they fold into the query
+axis instead of duplicating the keys and values. For batch 128 × beam 4 that is 29 MB
+instead of 116 MB.
 
 Every step is verified token-for-token identical to the naive path in `test_model.py`;
 BLEU is unchanged by any of them. The second-stage numbers are scaled from an interleaved
@@ -249,6 +277,7 @@ without careful warmup; it adds one final LayerNorm per stack.
 | [`average_checkpoints.py`](average_checkpoints.py) | Mean of the last N checkpoints (Section 6.1) |
 | [`bleu.py`](bleu.py) | Corpus BLEU from the definition |
 | [`bpe.py`](bpe.py) heap learner | 8k merges in 7.6 s (was 52 s); identical merges |
+| Checkpoints | float16 storage, 47.4 → 23.8 MB, BLEU identical |
 | [`bench.py`](bench.py) | Training and inference throughput, optionally across thread counts |
 | [`decode_sweep.py`](decode_sweep.py) | BLEU and output length across beam sizes and length penalties |
 | [`translate.py`](translate.py) | Training with the paper's recipe (Noam schedule, Adam β₂ = 0.98, label smoothing 0.1, weight tying), evaluation, and a demo command |
@@ -271,6 +300,7 @@ python average_checkpoints.py checkpoints/multi30k_bpe_epoch1[6-9].pt checkpoint
     --out checkpoints/multi30k_bpe_avg5.pt
 python translate.py evaluate --tokenizer bpe --checkpoint checkpoints/multi30k_bpe_avg5.pt
 python translate.py train --tokenizer bpe --pre-norm --variant prenorm --keep-last 5   # pre-norm comparison
+python translate.py train --tokenizer bpe --accum-steps 4 --warmup 100 --variant accum4  # 10k-token batches
 python translate.py demo "ein hund läuft durch den schnee ."
 python visualize.py                                     # regenerate figures
 ```

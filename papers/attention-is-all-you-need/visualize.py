@@ -60,13 +60,15 @@ def plot_training_curves():
     save_fig(fig, os.path.join(OUT, "training_curves.png"))
 
 
-def plot_norm_comparison():
-    """Post-norm vs pre-norm training curves, same BPE data and hyperparameters."""
+def plot_variant_comparison():
+    """The three BPE training runs: the paper's setup, pre-norm, and 4x effective batch."""
     results = load_results(os.path.join(HERE, "results.json"))
-    runs = {"post-norm (paper)": results.get("bpe", {}).get("history"),
-            "pre-norm": results.get("bpe_prenorm", {}).get("history")}
-    if not all(runs.values()):
-        print("pre-norm or post-norm BPE history missing; skipping norm comparison")
+    runs = {"post-norm, batch 2.5k (paper)": results.get("bpe", {}).get("history"),
+            "pre-norm, batch 2.5k": results.get("bpe_prenorm", {}).get("history"),
+            "post-norm, batch 10k (accum 4)": results.get("bpe_accum4", {}).get("history")}
+    runs = {k: v for k, v in runs.items() if v}
+    if len(runs) < 2:
+        print("need at least two BPE histories; skipping comparison")
         return
     fig, axes = plt.subplots(1, 2, figsize=(11, 3.6))
     for label, hist in runs.items():
@@ -74,10 +76,10 @@ def plot_norm_comparison():
         axes[0].plot(ep, [h["val_ppl"] for h in hist], marker="o", ms=3, label=label)
         axes[1].plot(ep, [h["val_bleu_greedy"] for h in hist], marker="o", ms=3, label=label)
     axes[0].set_yscale("log"); axes[0].set_title("Validation perplexity")
-    axes[1].set_title("Validation BLEU (greedy)")
+    axes[1].set_title("Validation BLEU (greedy)"); axes[1].set_ylim(25, 41)
     for a in axes:
         a.set_xlabel("epoch"); a.grid(alpha=0.3); a.legend()
-    save_fig(fig, os.path.join(OUT, "prenorm_vs_postnorm.png"))
+    save_fig(fig, os.path.join(OUT, "training_variants.png"))
 
 
 def _heatmap_grid(attn, xlabels, ylabels, title, fname, layer_names=None):
@@ -146,7 +148,7 @@ if __name__ == "__main__":
     args = p.parse_args()
     plot_positional_encoding()
     plot_training_curves()
-    plot_norm_comparison()
+    plot_variant_comparison()
     if not args.no_model:
         plot_attention_maps(args.sentence)
     print("wrote figures to", os.path.abspath(OUT))

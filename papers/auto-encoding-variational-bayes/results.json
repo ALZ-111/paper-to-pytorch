@@ -4120,5 +4120,79 @@
       "count": 19,
       "total_kl": 19.865631103515625
     }
+  },
+  "variance_study": {
+    "n_images": 200,
+    "seeds": 20,
+    "runs": {
+      "z20": [
+        {
+          "n_samples": 32,
+          "plain_mean": -96.84603347778321,
+          "plain_sd": 0.06903593699531019,
+          "antithetic_mean": -96.85859832763671,
+          "antithetic_sd": 0.09291613848542389,
+          "variance_ratio": 0.5520369430166825
+        },
+        {
+          "n_samples": 128,
+          "plain_mean": -96.3111400604248,
+          "plain_sd": 0.06618277595340553,
+          "antithetic_mean": -96.30680122375489,
+          "antithetic_sd": 0.07556394721509517,
+          "variance_ratio": 0.7671153734161086
+        },
+        {
+          "n_samples": 512,
+          "plain_mean": -95.95002708435058,
+          "plain_sd": 0.03898920304250521,
+          "antithetic_mean": -95.9658359527588,
+          "antithetic_sd": 0.047616210084853255,
+          "variance_ratio": 0.670469559457335
+        },
+        {
+          "n_samples": 2048,
+          "plain_mean": -95.71881637573242,
+          "plain_sd": 0.043049856127699335,
+          "antithetic_mean": -95.71931457519531,
+          "antithetic_sd": 0.05052593144197414,
+          "variance_ratio": 0.7259634433014596
+        }
+      ],
+      "z20_conv": [
+        {
+          "n_samples": 32,
+          "plain_mean": -89.89041099548339,
+          "plain_sd": 0.07241459272016244,
+          "antithetic_mean": -89.90291061401368,
+          "antithetic_sd": 0.11568980105056147,
+          "variance_ratio": 0.39179783912216354
+        },
+        {
+          "n_samples": 128,
+          "plain_mean": -89.20431938171387,
+          "plain_sd": 0.06804782955903456,
+          "antithetic_mean": -89.2627342224121,
+          "antithetic_sd": 0.0707163449122971,
+          "variance_ratio": 0.9259530027999295
+        },
+        {
+          "n_samples": 512,
+          "plain_mean": -88.8068862915039,
+          "plain_sd": 0.06096411227402776,
+          "antithetic_mean": -88.83398551940918,
+          "antithetic_sd": 0.05316400123700895,
+          "variance_ratio": 1.3149619602956126
+        },
+        {
+          "n_samples": 2048,
+          "plain_mean": -88.53907165527343,
+          "plain_sd": 0.054210466983047004,
+          "antithetic_mean": -88.5468521118164,
+          "antithetic_sd": 0.05873105015135664,
+          "variance_ratio": 0.8519826760633458
+        }
+      ]
+    }
   }
 }

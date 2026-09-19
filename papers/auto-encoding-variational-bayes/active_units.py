@@ -34,8 +34,10 @@ OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "asse
 def analyse(model, x, threshold=0.01):
     mu, logvar = model.encoder(x)
     mean_var = mu.var(dim=0)                                        # (Z,)
-    per_dim_kl = torch.stack(
-        [kl_standard_normal(mu[:, [u]], logvar[:, [u]]).mean() for u in range(mu.size(1))])
+    # The Gaussian KL is a sum over dimensions, so the per-dimension terms are just the
+    # summand, averaged over the batch: no need to call kl_standard_normal Z times
+    # (which was 200 forward passes over the whole test set for the Z=200 model).
+    per_dim_kl = (-0.5 * (1 + logvar - mu.pow(2) - logvar.exp())).mean(dim=0)   # (Z,)
     return {
         "active_units": int((mean_var > threshold).sum()),
         "z_dim": mu.size(1),

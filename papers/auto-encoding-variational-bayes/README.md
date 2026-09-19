@@ -114,6 +114,34 @@ not its final 50-epoch value).
   19 active units versus the conv ELBO model's 15. The importance-weighted objective keeps
   more of the latent space in use.
 
+### How trustworthy is that number? ([`variance_study.py`](variance_study.py))
+
+Mean log p(x) over the same 200 test images, 20 seeds per cell:
+
+| Importance samples L | MLP, Z = 20 | Conv, Z = 20 |
+|---|---|---|
+| 32 | −96.85 ± 0.07 | −89.89 ± 0.07 |
+| 128 | −96.31 ± 0.07 | −89.20 ± 0.07 |
+| 512 | −95.95 ± 0.04 | −88.81 ± 0.06 |
+| 2048 | −95.72 ± 0.04 | −88.54 ± 0.05 |
+
+<p align="center"><img src="../../assets/vae/variance_study.png" width="100%"></p>
+
+- **Every reported log p(x) is a lower bound, and a loose one at small L.** By Jensen's
+  inequality log (1/L) Σ wᵢ underestimates log p(x), and the gap shrinks as L grows: the
+  MLP's estimate climbs 1.1 nats from L = 32 to L = 2048 and is still rising. A paper
+  quoting L = 100 and one quoting L = 5000 are not comparing the same quantity. The
+  headline numbers in this README use L = 5000 (or 1000 for the sweep), so they understate
+  the models by a few tenths of a nat.
+- **Seed-to-seed noise is small.** ±0.04–0.07 nats at L ≥ 512, so differences of a nat or
+  more between models in the tables above are real, and differences of a tenth are not.
+- **Antithetic sampling does not help.** Drawing L/2 noise vectors and using each with both
+  signs is valid (q is symmetric about μ) and reduces variance for smooth functions of ε,
+  but log-sum-exp is dominated by its largest weight: the −ε partner of a high-weight
+  sample is usually a negligible one, so the negative correlation never reaches the
+  estimator. Measured across 8 (model, L) cells it was equal or slightly worse every time.
+  Kept in the script as a documented dead end.
+
 ### Samples and reconstructions
 
 <p align="center">
@@ -196,6 +224,7 @@ convolution kernels prefer, takes it from 21 s to 15 s on the same workload and 
 | [`train.py`](train.py) | MNIST training with per-epoch ELBO, reconstruction and KL |
 | [`evaluate.py`](evaluate.py) | Importance-weighted log p(x) for every trained model |
 | [`active_units.py`](active_units.py) | Active-unit count and per-dimension KL for every trained model |
+| [`variance_study.py`](variance_study.py) | Bias and seed-to-seed spread of the log p(x) estimator |
 | [`visualize.py`](visualize.py) | All figures above |
 | [`results.json`](results.json) | Per-epoch history and evaluation for all six runs |
 
@@ -212,6 +241,7 @@ for b in 0.5 2 4; do python train.py --z-dim 20 --beta $b --epochs 30; done   # 
 python train.py --z-dim 20 --kl-warmup 10 --epochs 30                        # KL annealing
 python evaluate.py --n-test 2000 --samples 1000   # ~5 min for all eight models
 python active_units.py
+python variance_study.py --n-images 200 --seeds 20
 python visualize.py
 ```
 
@@ -223,6 +253,10 @@ python visualize.py
   barely above Z = 20's 27, because only 38 dimensions are active: the encoder drives the
   variance of the other 162 to 1 and their mean to 0, paying zero KL for them. This is why
   the model does not overfit as Z grows.
+- **A likelihood number without its L is not a number.** The importance-sampled
+  estimator is biased low and creeps up with more samples, so "log p(x) = −97.8" only
+  means something alongside the sample count and the test subset. Quoting error bars
+  costs one extra script and makes every other comparison in this README interpretable.
 - **The KL weight is a dial between density and compression.** β is a Lagrange multiplier
   on the rate term: lowering it spends KL on reconstruction, raising it prunes dimensions.
   Only β = 1 is a likelihood bound, and it wins on log p(x); every other setting is buying

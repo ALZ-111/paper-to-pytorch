@@ -16,7 +16,7 @@ Tracking papers I've read, am implementing, or plan to implement.
 | 📋 | Deep Residual Learning for Image Recognition | He et al. | 2015 | ResNet |
 | 📋 | Generative Adversarial Networks | Goodfellow et al. | 2014 | GAN |
 | 📋 | BERT | Devlin et al. | 2018 | NLP |
-| 📋 | Neural Collaborative Filtering | He et al. | 2017 | RecSys |
+| 🔨 | Neural Collaborative Filtering | He et al. | 2017 | RecSys |
 
 ---
 

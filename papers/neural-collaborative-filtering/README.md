@@ -44,6 +44,7 @@ paper's Table 1 exactly.
 | [`test_data.py`](test_data.py) | No-leakage, tie-breaking, negative-validity and determinism tests on synthetic data, plus a check of the real split against Table 1 |
 | [`model.py`](model.py) | GMF, MLP and NeuMF (Eqs. 9–12), sized as in the authors' code, with NeuMF pre-training from trained GMF and MLP |
 | [`metrics.py`](metrics.py) | HR@10 and NDCG@10 over all 604k test pairs in a few batched passes |
+| [`train.py`](train.py) | Training with the paper's recipe, per-epoch test HR/NDCG, final-epoch and best-epoch reporting, NeuMF pre-training |
 | [`test_model.py`](test_model.py) | GMF reduces to MF, tower shapes, no dead parameters, pre-trained NeuMF equals the α-blend of its parents, metrics on hand-computed cases, chance and oracle scores |
 
 ## Running it
@@ -51,4 +52,8 @@ paper's Table 1 exactly.
 ```bash
 python data.py                      # download and build the split (~20 s once)
 python -m pytest -v                 # 15 tests
+python train.py --model gmf --factors 8     # ~9 min on CPU
+python train.py --model mlp --factors 8     # ~16 min
+python train.py --model neumf --factors 8
+python train.py --model neumf --factors 8 --pretrain   # needs the GMF and MLP above
 ```

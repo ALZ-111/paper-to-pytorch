@@ -34,15 +34,15 @@ from utils.checkpoint import load_checkpoint, save_checkpoint
 from utils.results import update_results
 from data import NegativeSampler, load_ml1m
 from metrics import evaluate
-from model import build
+from model import build, split_parameters
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CKPT_DIR = os.path.join(HERE, "checkpoints")
 RESULTS = os.path.join(HERE, "results.json")
 
 
-def run_tag(model, factors, pretrain=False):
-    return f"{model}_f{factors}" + ("_pretrain" if pretrain else "")
+def run_tag(model, factors, pretrain=False, suffix=""):
+    return f"{model}_f{factors}" + ("_pretrain" if pretrain else "") + suffix
 
 
 def load_model(tag, n_users, n_items):
@@ -59,24 +59,30 @@ def train(args):
     sampler = NegativeSampler(d["train_u"], d["train_i"], n_items)
     rng = np.random.default_rng(args.seed)
 
-    model = build(args.model, n_users, n_items, args.factors)
+    model = build(args.model, n_users, n_items, args.factors, sparse=args.sparse)
     if args.pretrain:
         assert args.model == "neumf", "--pretrain applies to NeuMF"
         gmf = load_model(run_tag("gmf", args.factors), n_users, n_items)
         mlp = load_model(run_tag("mlp", args.factors), n_users, n_items)
         model.load_pretrained(gmf, mlp, alpha=args.alpha)
-    tag = run_tag(args.model, args.factors, args.pretrain)
+    tag = run_tag(args.model, args.factors, args.pretrain, args.tag_suffix)
 
     optimizer = args.optimizer or ("sgd" if args.pretrain else "adam")
-    if optimizer == "adam":
-        opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    # SGD handles sparse gradients directly. Adam does not: it needs SparseAdam for the
+    # embedding tables and plain Adam for the handful of dense layers.
+    if optimizer == "sgd":
+        opts = [torch.optim.SGD(model.parameters(), lr=args.lr)]
+    elif args.sparse:
+        emb, dense = split_parameters(model)
+        opts = [torch.optim.SparseAdam(emb, lr=args.lr), torch.optim.Adam(dense, lr=args.lr)]
     else:
-        opt = torch.optim.SGD(model.parameters(), lr=args.lr)
+        opts = [torch.optim.Adam(model.parameters(), lr=args.lr)]
     loss_fn = nn.BCEWithLogitsLoss()   # the paper's log loss (Eq. 7), numerically stable
 
     n_params = count_parameters(model)
     hr, nd = evaluate(model, d["test_candidates"])
-    print(f"{tag}: {n_params:,} params, {optimizer} lr {args.lr} | "
+    print(f"{tag}: {n_params:,} params, {optimizer}{' sparse' if args.sparse else ''} "
+          f"lr {args.lr} | "
           f"epoch 0 HR@10 {hr:.4f} NDCG@10 {nd:.4f}", flush=True)
     history = [{"epoch": 0, "hr": hr, "ndcg": nd, "loss": None, "seconds": 0.0}]
 
@@ -90,9 +96,11 @@ def train(args):
         for s in range(0, len(u), args.batch_size):
             logits = model(u[s : s + args.batch_size], i[s : s + args.batch_size])
             loss = loss_fn(logits, y[s : s + args.batch_size])
-            opt.zero_grad()
+            for o in opts:
+                o.zero_grad()
             loss.backward()
-            opt.step()
+            for o in opts:
+                o.step()
             total += loss.item() * logits.numel()
             n += logits.numel()
         hr, nd = evaluate(model, d["test_candidates"])
@@ -129,5 +137,8 @@ if __name__ == "__main__":
                    help="default: adam, or sgd with --pretrain (as in the paper)")
     p.add_argument("--pretrain", action="store_true")
     p.add_argument("--alpha", type=float, default=0.5)
+    p.add_argument("--tag-suffix", default="", help="distinguish otherwise identical runs")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--sparse", action="store_true",
+                   help="sparse embedding gradients + SparseAdam; faster above ~32 factors")
     train(p.parse_args())

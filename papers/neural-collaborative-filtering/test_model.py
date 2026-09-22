@@ -104,3 +104,76 @@ def test_evaluate_gives_chance_level_for_a_random_model_and_1_for_an_oracle():
             return (i == pos[u]).float()
 
     assert evaluate(Oracle(), cand) == (1.0, 1.0)
+
+
+def test_sparse_embeddings_do_not_change_the_forward_pass():
+    torch.manual_seed(0)
+    dense = M.build("neumf", U, I, 8)
+    sparse = M.build("neumf", U, I, 8, sparse=True)
+    sparse.load_state_dict(dense.state_dict())
+    u, i = _batch()
+    assert torch.allclose(dense(u, i), sparse(u, i), atol=1e-6)
+    emb, rest = M.split_parameters(sparse)
+    assert len(emb) == 4                                # two tables per branch
+    assert M.split_parameters(dense)[0] == []           # nothing sparse to split out
+    # At MovieLens sizes the tables are the overwhelming majority of the parameters,
+    # which is why skipping the untouched rows is worth doing at all: 99% at 8 factors,
+    # still 94% at 64 (the tower grows quadratically with factors, the tables linearly).
+    for factors, share in ((8, 0.98), (64, 0.9)):
+        b_emb, b_rest = M.split_parameters(M.build("mlp", 6040, 3706, factors, sparse=True))
+        n_emb = sum(p.numel() for p in b_emb)
+        assert n_emb / (n_emb + sum(p.numel() for p in b_rest)) > share
+
+
+def test_sparse_and_dense_adam_agree_on_the_first_step_then_diverge_on_untouched_rows():
+    """Two differences, both worth pinning down.
+
+    Step 1: the updates agree only up to epsilon handling. Dense Adam divides the second
+    moment by its bias correction and *then* adds eps; SparseAdam adds eps to the raw
+    sqrt and folds the correction into the step size. At step 1 that scales eps by
+    sqrt(1 - beta2) = 0.032, so the two differ by ~1e-3 with the default eps=1e-8 and
+    agree to 1e-8 when eps is negligible.
+
+    Step 2 onward: dense Adam keeps moving rows that received no gradient, because their
+    momentum is still non-zero, while SparseAdam touches only the rows in the batch. That
+    is the real semantic price of the speed-up."""
+    def setup(sparse, eps=1e-8):
+        torch.manual_seed(0)
+        m = M.build("gmf", U, I, 8, sparse=sparse)
+        if sparse:
+            emb, rest = M.split_parameters(m)
+            return m, [torch.optim.SparseAdam(emb, lr=0.1, eps=eps),
+                       torch.optim.Adam(rest, lr=0.1, eps=eps)]
+        return m, [torch.optim.Adam(m.parameters(), lr=0.1, eps=eps)]
+
+    def step(m, opts, u, i):
+        loss = nn.functional.binary_cross_entropy_with_logits(m(u, i), torch.ones(len(u)))
+        for o in opts:
+            o.zero_grad()
+        loss.backward()
+        for o in opts:
+            o.step()
+
+    first_u, first_i = torch.tensor([0, 1]), torch.tensor([0, 1])
+    second_u, second_i = torch.tensor([2, 3]), torch.tensor([2, 3])
+
+    # With eps negligible the two optimizers' first step is the same computation.
+    tiny = [setup(s, eps=1e-16) for s in (False, True)]
+    for m, opts in tiny:
+        step(m, opts, first_u, first_i)
+    assert torch.allclose(tiny[0][0].user.weight, tiny[1][0].user.weight, atol=1e-6)
+
+    md, od = setup(False)
+    ms, os_ = setup(True)
+    step(md, od, first_u, first_i)
+    step(ms, os_, first_u, first_i)
+    # With the default eps they differ, but only slightly, and only on touched rows.
+    delta = (md.user.weight - ms.user.weight).abs().max()
+    assert 0 < delta < 1e-2
+
+    before_d = md.user.weight[0].clone()
+    before_s = ms.user.weight[0].clone()
+    step(md, od, second_u, second_i)      # user 0 gets no gradient this step
+    step(ms, os_, second_u, second_i)
+    assert not torch.allclose(md.user.weight[0], before_d)             # dense keeps moving it
+    assert torch.equal(ms.user.weight[0], before_s)                    # sparse leaves it alone

@@ -28,6 +28,18 @@ def _init_embedding(emb):
     nn.init.normal_(emb.weight, std=0.01)            # authors' code: normal(scale=0.01)
 
 
+def embedding(n, dim, sparse=False):
+    """An embedding table whose gradient is dense (default) or sparse.
+
+    A sparse gradient carries only the rows a batch touched, which lets SparseAdam skip
+    the rest of the table. That is a large saving when the tables dominate the parameter
+    count (they are 99% of the MLP's), but it is not the same update: see train.py.
+    """
+    emb = nn.Embedding(n, dim, sparse=sparse)
+    _init_embedding(emb)
+    return emb
+
+
 def _init_output(linear):
     # Keras lecun_uniform, as in the authors' code: U(-sqrt(3/fan_in), +sqrt(3/fan_in)).
     bound = math.sqrt(3.0 / linear.in_features)
@@ -39,13 +51,11 @@ class GMF(nn.Module):
     """Generalised matrix factorisation. With h fixed to all-ones and no bias this is
     exactly MF's dot product; learning h lets factors be weighted unequally."""
 
-    def __init__(self, n_users, n_items, factors=8):
+    def __init__(self, n_users, n_items, factors=8, sparse=False):
         super().__init__()
-        self.user = nn.Embedding(n_users, factors)
-        self.item = nn.Embedding(n_items, factors)
+        self.user = embedding(n_users, factors, sparse)
+        self.item = embedding(n_items, factors, sparse)
         self.out = nn.Linear(factors, 1)
-        _init_embedding(self.user)
-        _init_embedding(self.item)
         _init_output(self.out)
 
     def features(self, u, i):
@@ -60,11 +70,11 @@ class MLP(nn.Module):
     """Concatenate user and item embeddings and learn their interaction with a ReLU
     tower. layers[0] is the concatenated width, so each embedding is layers[0] // 2."""
 
-    def __init__(self, n_users, n_items, layers=(64, 32, 16, 8)):
+    def __init__(self, n_users, n_items, layers=(64, 32, 16, 8), sparse=False):
         super().__init__()
         assert layers[0] % 2 == 0, "layers[0] is the concatenated embedding width"
-        self.user = nn.Embedding(n_users, layers[0] // 2)
-        self.item = nn.Embedding(n_items, layers[0] // 2)
+        self.user = embedding(n_users, layers[0] // 2, sparse)
+        self.item = embedding(n_items, layers[0] // 2, sparse)
         tower = []
         for a, b in zip(layers[:-1], layers[1:]):
             lin = nn.Linear(a, b)
@@ -73,8 +83,6 @@ class MLP(nn.Module):
             tower += [lin, nn.ReLU()]
         self.tower = nn.Sequential(*tower)
         self.out = nn.Linear(layers[-1], 1)
-        _init_embedding(self.user)
-        _init_embedding(self.item)
         _init_output(self.out)
 
     def features(self, u, i):
@@ -88,10 +96,10 @@ class NeuMF(nn.Module):
     """Fusion of GMF and MLP (Section 3.4): each branch computes its interaction vector
     with its own embeddings, the two are concatenated, one output layer scores them."""
 
-    def __init__(self, n_users, n_items, factors=8, layers=(64, 32, 16, 8)):
+    def __init__(self, n_users, n_items, factors=8, layers=(64, 32, 16, 8), sparse=False):
         super().__init__()
-        self.gmf = GMF(n_users, n_items, factors)
-        self.mlp = MLP(n_users, n_items, layers)
+        self.gmf = GMF(n_users, n_items, factors, sparse)
+        self.mlp = MLP(n_users, n_items, layers, sparse)
         # The branches' own output layers are unused inside NeuMF; remove them so they
         # neither count as parameters nor appear in checkpoints.
         self.gmf.out = None
@@ -122,17 +130,25 @@ class NeuMF(nn.Module):
         return self
 
 
-def build(kind, n_users, n_items, factors=8):
+def build(kind, n_users, n_items, factors=8, sparse=False):
     """GMF / MLP / NeuMF at a given number of predictive factors, sized as in the paper:
     the MLP tower ends at `factors` and doubles back up for three hidden layers."""
     layers = (8 * factors, 4 * factors, 2 * factors, factors)
     if kind == "gmf":
-        return GMF(n_users, n_items, factors)
+        return GMF(n_users, n_items, factors, sparse)
     if kind == "mlp":
-        return MLP(n_users, n_items, layers)
+        return MLP(n_users, n_items, layers, sparse)
     if kind == "neumf":
-        return NeuMF(n_users, n_items, factors, layers)
+        return NeuMF(n_users, n_items, factors, layers, sparse)
     raise ValueError(f"unknown model {kind!r}")
+
+
+def split_parameters(model):
+    """(sparse embedding weights, everything else) for building the two optimizers."""
+    emb = [p for m in model.modules() if isinstance(m, nn.Embedding) and m.sparse
+           for p in m.parameters()]
+    ids = {id(p) for p in emb}
+    return emb, [p for p in model.parameters() if id(p) not in ids]
 
 
 if __name__ == "__main__":

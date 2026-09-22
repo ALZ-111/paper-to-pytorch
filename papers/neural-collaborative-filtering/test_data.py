@@ -107,3 +107,32 @@ def test_movielens_split_matches_the_paper():
     q = (np.arange(6040)[:, None] * d["n_items"] + cand).ravel()
     assert not D.in_sorted(q, keys).any()
     assert all(len(set(row)) == 100 for row in cand.tolist())
+
+
+def test_leave_n_out_peels_the_newest_interactions_in_order():
+    u, i, t = _toy()
+    tr_u, tr_i, holds = D.leave_n_out(u, i, t, n=2)
+    assert [h[0].tolist() for h in holds] == [[10, 20, 30], [10, 20, 30]]
+    assert holds[0][1].tolist() == [101, 103, 100]        # newest (same as leave_one_out)
+    assert holds[1][1].tolist() == [102, 100, 101]        # second newest
+    assert len(tr_u) == len(u) - 6                        # two removed per user
+    # leave_one_out is the n=1 case
+    a = D.leave_one_out(u, i, t)
+    b_tr_u, b_tr_i, b_holds = D.leave_n_out(u, i, t, n=1)
+    assert np.array_equal(a[0], b_tr_u) and np.array_equal(a[2], b_holds[0][0])
+
+
+@pytest.mark.skipif(not REAL, reason="run `python data.py` to build the MovieLens split")
+def test_validation_split_is_disjoint_from_train_and_test():
+    d = D.load_ml1m(validation=True)
+    assert d["val_candidates"].shape == (6040, 100)
+    # every user loses exactly two interactions relative to the full data
+    assert len(d["train_u"]) + 2 * 6040 == 1_000_209
+    assert not np.array_equal(d["val_i"], d["test_i"])
+    keys = np.unique(d["train_u"] * d["n_items"] + d["train_i"])
+    for col in ("val_candidates", "test_candidates"):
+        q = (np.arange(6040)[:, None] * d["n_items"] + d[col]).ravel()
+        assert not D.in_sorted(q, keys).any()             # no candidate is a training item
+    # the validation item is not among the test candidates, and vice versa
+    assert not (d["val_i"][:, None] == d["test_candidates"]).any()
+    assert not (d["test_i"][:, None] == d["val_candidates"]).any()

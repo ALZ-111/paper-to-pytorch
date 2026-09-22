@@ -17,6 +17,12 @@ epoch's test score but reports two numbers: the final epoch (no selection, what 
 comparison should use) and the best epoch (the paper's protocol, optimistic). Pre-training
 uses the final-epoch GMF and MLP, so no test information leaks into NeuMF.
 
+--validate adds the honest third option: hold out each user's second newest interaction
+as a validation set, choose the epoch by validation HR, and report the test score at that
+epoch. It costs one interaction per user of training data, so its numbers are not
+directly comparable to the paper's, but it needs no test labels to pick an epoch. This
+matters at 64 factors, where the models peak around epoch 8-10 and then decline.
+
 Writes checkpoints/{tag}.pt and results.json[tag].
 """
 
@@ -54,7 +60,7 @@ def load_model(tag, n_users, n_items):
 
 def train(args):
     seed_everything(args.seed)
-    d = load_ml1m()
+    d = load_ml1m(validation=args.validate)
     n_users, n_items = d["n_users"], d["n_items"]
     sampler = NegativeSampler(d["train_u"], d["train_i"], n_items)
     rng = np.random.default_rng(args.seed)
@@ -79,12 +85,18 @@ def train(args):
         opts = [torch.optim.Adam(model.parameters(), lr=args.lr)]
     loss_fn = nn.BCEWithLogitsLoss()   # the paper's log loss (Eq. 7), numerically stable
 
+    def score(m):
+        """(test HR, test NDCG, val HR or None)."""
+        t_hr, t_nd = evaluate(m, d["test_candidates"])
+        v_hr = evaluate(m, d["val_candidates"])[0] if args.validate else None
+        return t_hr, t_nd, v_hr
+
     n_params = count_parameters(model)
-    hr, nd = evaluate(model, d["test_candidates"])
+    hr, nd, v_hr = score(model)
     print(f"{tag}: {n_params:,} params, {optimizer}{' sparse' if args.sparse else ''} "
           f"lr {args.lr} | "
           f"epoch 0 HR@10 {hr:.4f} NDCG@10 {nd:.4f}", flush=True)
-    history = [{"epoch": 0, "hr": hr, "ndcg": nd, "loss": None, "seconds": 0.0}]
+    history = [{"epoch": 0, "hr": hr, "ndcg": nd, "val_hr": v_hr, "loss": None, "seconds": 0.0}]
 
     t_start = time.time()
     for epoch in range(1, args.epochs + 1):
@@ -103,17 +115,22 @@ def train(args):
                 o.step()
             total += loss.item() * logits.numel()
             n += logits.numel()
-        hr, nd = evaluate(model, d["test_candidates"])
-        rec = {"epoch": epoch, "hr": hr, "ndcg": nd, "loss": total / n, "seconds": time.time() - t0}
+        hr, nd, v_hr = score(model)
+        rec = {"epoch": epoch, "hr": hr, "ndcg": nd, "val_hr": v_hr,
+               "loss": total / n, "seconds": time.time() - t0}
         history.append(rec)
-        print(f"  epoch {epoch:2d} | loss {rec['loss']:.4f} | HR@10 {hr:.4f} | NDCG@10 {nd:.4f} "
-              f"| {rec['seconds']:4.0f}s", flush=True)
+        print(f"  epoch {epoch:2d} | loss {rec['loss']:.4f} | HR@10 {hr:.4f} | NDCG@10 {nd:.4f}"
+              + (f" | val HR {v_hr:.4f}" if v_hr is not None else "")
+              + f" | {rec['seconds']:4.0f}s", flush=True)
 
     best = max(history[1:], key=lambda r: r["hr"])
     final = history[-1]
+    chosen = max(history[1:], key=lambda r: r["val_hr"]) if args.validate else None
     minutes = (time.time() - t_start) / 60
     print(f"{tag} done in {minutes:.1f} min | final HR {final['hr']:.4f} NDCG {final['ndcg']:.4f} "
-          f"| best (epoch {best['epoch']}) HR {best['hr']:.4f} NDCG {best['ndcg']:.4f}")
+          f"| best-on-test (epoch {best['epoch']}) HR {best['hr']:.4f} NDCG {best['ndcg']:.4f}"
+          + (f" | val-selected (epoch {chosen['epoch']}) HR {chosen['hr']:.4f} "
+             f"NDCG {chosen['ndcg']:.4f}" if chosen else ""))
 
     os.makedirs(CKPT_DIR, exist_ok=True)
     save_checkpoint({"model": model.state_dict(), "args": vars(args), "epoch": args.epochs},
@@ -122,6 +139,8 @@ def train(args):
         "config": {**vars(args), "optimizer": optimizer}, "parameters": n_params,
         "final": {"epoch": final["epoch"], "hr": final["hr"], "ndcg": final["ndcg"]},
         "best_on_test": {"epoch": best["epoch"], "hr": best["hr"], "ndcg": best["ndcg"]},
+        **({"val_selected": {"epoch": chosen["epoch"], "hr": chosen["hr"],
+                             "ndcg": chosen["ndcg"], "val_hr": chosen["val_hr"]}} if chosen else {}),
         "minutes": minutes, "history": history}})
 
 
@@ -139,6 +158,8 @@ if __name__ == "__main__":
     p.add_argument("--alpha", type=float, default=0.5)
     p.add_argument("--tag-suffix", default="", help="distinguish otherwise identical runs")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--validate", action="store_true",
+                   help="hold out a validation interaction per user and pick the epoch with it")
     p.add_argument("--sparse", action="store_true",
                    help="sparse embedding gradients + SparseAdam; faster above ~32 factors")
     train(p.parse_args())

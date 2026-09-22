@@ -61,16 +61,28 @@ def reindex(ids):
     return inv.astype(np.int64), len(uniq)
 
 
-def leave_one_out(users, items, timestamps):
-    """Hold out each user's latest interaction.
+def leave_n_out(users, items, timestamps, n=1):
+    """Hold out each user's n latest interactions, newest first.
 
     Ties in timestamp are broken by position in the input, so the split is fully
-    deterministic. Returns train_u, train_i, test_u, test_i with test sorted by user.
+    deterministic. Returns (train_u, train_i, holdouts) where holdouts[0] is the newest
+    interaction per user as (u, i), holdouts[1] the next newest, and so on.
     """
-    order = np.lexsort((np.arange(len(users)), timestamps, users))   # user, then time, then file order
+    order = np.lexsort((np.arange(len(users)), timestamps, users))  # user, then time, then file order
     u, i = users[order], items[order]
-    last = np.r_[u[1:] != u[:-1], True]                             # last row of each user's block
-    return u[~last], i[~last], u[last], i[last]
+    # rank_from_end = 0 for each user's newest row, 1 for the next, ...
+    block_end = np.r_[np.nonzero(u[1:] != u[:-1])[0], len(u) - 1]   # index of each user's last row
+    end_for_row = np.repeat(block_end, np.diff(np.r_[-1, block_end]))
+    rank_from_end = end_for_row - np.arange(len(u))
+    holdouts = [(u[rank_from_end == r], i[rank_from_end == r]) for r in range(n)]
+    keep = rank_from_end >= n
+    return u[keep], i[keep], holdouts
+
+
+def leave_one_out(users, items, timestamps):
+    """Hold out each user's latest interaction (the paper's protocol)."""
+    tr_u, tr_i, holdouts = leave_n_out(users, items, timestamps, n=1)
+    return tr_u, tr_i, holdouts[0][0], holdouts[0][1]
 
 
 def sample_test_negatives(users, items, test_u, n_items, num_neg=99, seed=0):
@@ -136,13 +148,20 @@ class NegativeSampler:
 
 
 # ------------------------------------------------------------------------------ entry
-def load_ml1m(seed=0, num_test_neg=99):
+def load_ml1m(seed=0, num_test_neg=99, validation=False):
     """Returns a dict with the leave-one-out split and fixed test candidates:
 
         n_users, n_items, train_u, train_i, test_u, test_i,
         test_candidates  (n_users, 1 + num_test_neg): column 0 is the held-out item.
+
+    With validation=True each user's *second* newest interaction is also held out, with
+    its own candidate list (val_u, val_i, val_candidates), and the training set shrinks
+    by one interaction per user. That is a departure from the paper, which trains on
+    everything and picks the reported epoch by test score; it exists so an epoch can be
+    chosen without looking at the test set. The two protocols are not comparable, so the
+    cache files are kept separate.
     """
-    path = CACHE.format(seed=seed, neg=num_test_neg)
+    path = CACHE.format(seed=seed, neg=num_test_neg) + (".val" if validation else "")
     if os.path.exists(path):
         z = np.load(path)
         return {k: (int(z[k]) if z[k].ndim == 0 else z[k]) for k in z.files}
@@ -150,13 +169,20 @@ def load_ml1m(seed=0, num_test_neg=99):
     users, items, ts = download_ml1m()
     users, n_users = reindex(users)
     items, n_items = reindex(items)
-    train_u, train_i, test_u, test_i = leave_one_out(users, items, ts)
+    train_u, train_i, holdouts = leave_n_out(users, items, ts, n=2 if validation else 1)
+    test_u, test_i = holdouts[0]
     neg = sample_test_negatives(users, items, test_u, n_items, num_test_neg, seed)
     d = {
         "n_users": n_users, "n_items": n_items,
         "train_u": train_u, "train_i": train_i, "test_u": test_u, "test_i": test_i,
         "test_candidates": np.concatenate([test_i[:, None], neg], axis=1),
     }
+    if validation:
+        val_u, val_i = holdouts[1]
+        # Validation negatives use a different seed so they are not the test negatives.
+        vneg = sample_test_negatives(users, items, val_u, n_items, num_test_neg, seed + 1000)
+        d.update({"val_u": val_u, "val_i": val_i,
+                  "val_candidates": np.concatenate([val_i[:, None], vneg], axis=1)})
     np.savez_compressed(path, **d)
     return d
 

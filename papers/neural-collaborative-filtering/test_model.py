@@ -177,3 +177,39 @@ def test_sparse_and_dense_adam_agree_on_the_first_step_then_diverge_on_untouched
     step(ms, os_, second_u, second_i)
     assert not torch.allclose(md.user.weight[0], before_d)             # dense keeps moving it
     assert torch.equal(ms.user.weight[0], before_s)                    # sparse leaves it alone
+
+
+def test_l2_penalty_covers_only_the_rows_a_batch_uses():
+    torch.manual_seed(0)
+    for kind in ("gmf", "mlp", "neumf"):
+        m = M.build(kind, U, I, 8)
+        u, i = torch.tensor([3, 3]), torch.tensor([7, 7])          # one user, one item, twice
+        pen = m.l2_penalty(u, i)
+        tables = [(m.user, m.item)] if kind != "neumf" else [(m.gmf.user, m.gmf.item),
+                                                             (m.mlp.user, m.mlp.item)]
+        expected = sum(2 * (ut(u[:1]).pow(2).sum() + it(i[:1]).pow(2).sum()) for ut, it in tables)
+        assert torch.allclose(pen, expected, atol=1e-6)             # repeats counted twice
+        # a row outside the batch contributes nothing
+        with torch.no_grad():
+            for ut, _ in tables:
+                ut.weight[5].fill_(100.0)
+        assert torch.allclose(m.l2_penalty(u, i), pen, atol=1e-4)
+
+
+def test_l2_penalty_shrinks_the_embeddings_it_penalises():
+    torch.manual_seed(0)
+    m = M.build("gmf", U, I, 8)
+    with torch.no_grad():
+        m.user.weight.fill_(0.5)
+        m.item.weight.fill_(0.5)
+    # lr * 2 * reg must stay well below 1, or the row overshoots and oscillates about 0
+    # instead of decaying towards it.
+    opt = torch.optim.SGD(m.parameters(), lr=0.05)
+    u, i = torch.tensor([1]), torch.tensor([2])
+    for _ in range(5):
+        loss = 1.0 * m.l2_penalty(u, i)           # penalty alone, no data term
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+    assert 0 < m.user.weight[1].abs().max() < 0.45    # penalised row shrank towards zero
+    assert torch.allclose(m.user.weight[0], torch.full((8,), 0.5))   # untouched row did not

@@ -23,6 +23,12 @@ epoch. It costs one interaction per user of training data, so its numbers are no
 directly comparable to the paper's, but it needs no test labels to pick an epoch. This
 matters at 64 factors, where the models peak around epoch 8-10 and then decline.
 
+--reg adds L2 on the embeddings. The authors' Keras code regularises the whole embedding
+matrix every step (embeddings_regularizer=l2); this penalises only the rows the batch
+actually used, which is the form that works with sparse gradients and weights each row by
+how often it is seen. The paper sweeps this and reports 0 for its results, but its models
+do not overfit the way these do at 64 factors.
+
 Writes checkpoints/{tag}.pt and results.json[tag].
 """
 
@@ -47,8 +53,9 @@ CKPT_DIR = os.path.join(HERE, "checkpoints")
 RESULTS = os.path.join(HERE, "results.json")
 
 
-def run_tag(model, factors, pretrain=False, suffix=""):
-    return f"{model}_f{factors}" + ("_pretrain" if pretrain else "") + suffix
+def run_tag(model, factors, pretrain=False, suffix="", reg=0.0):
+    return (f"{model}_f{factors}" + ("_pretrain" if pretrain else "")
+            + (f"_reg{reg:g}" if reg else "") + suffix)
 
 
 def load_model(tag, n_users, n_items):
@@ -71,7 +78,7 @@ def train(args):
         gmf = load_model(run_tag("gmf", args.factors), n_users, n_items)
         mlp = load_model(run_tag("mlp", args.factors), n_users, n_items)
         model.load_pretrained(gmf, mlp, alpha=args.alpha)
-    tag = run_tag(args.model, args.factors, args.pretrain, args.tag_suffix)
+    tag = run_tag(args.model, args.factors, args.pretrain, args.tag_suffix, args.reg)
 
     optimizer = args.optimizer or ("sgd" if args.pretrain else "adam")
     # SGD handles sparse gradients directly. Adam does not: it needs SparseAdam for the
@@ -106,8 +113,11 @@ def train(args):
         u, i, y = torch.from_numpy(u), torch.from_numpy(i), torch.from_numpy(y)
         total, n = 0.0, 0
         for s in range(0, len(u), args.batch_size):
-            logits = model(u[s : s + args.batch_size], i[s : s + args.batch_size])
+            ub, ib = u[s : s + args.batch_size], i[s : s + args.batch_size]
+            logits = model(ub, ib)
             loss = loss_fn(logits, y[s : s + args.batch_size])
+            if args.reg:
+                loss = loss + args.reg * model.l2_penalty(ub, ib) / len(ub)
             for o in opts:
                 o.zero_grad()
             loss.backward()
@@ -156,6 +166,8 @@ if __name__ == "__main__":
                    help="default: adam, or sgd with --pretrain (as in the paper)")
     p.add_argument("--pretrain", action="store_true")
     p.add_argument("--alpha", type=float, default=0.5)
+    p.add_argument("--reg", type=float, default=0.0,
+                   help="L2 on the embedding rows used by each batch (0 = the paper's setting)")
     p.add_argument("--tag-suffix", default="", help="distinguish otherwise identical runs")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--validate", action="store_true",

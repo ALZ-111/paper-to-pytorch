@@ -62,6 +62,10 @@ class GMF(nn.Module):
         """(B,) user ids, (B,) item ids -> (B, factors) interaction vector."""
         return self.user(u) * self.item(i)
 
+    def l2_penalty(self, u, i):
+        """Sum of squares of the embedding rows this batch used (see train.py --reg)."""
+        return self.user(u).pow(2).sum() + self.item(i).pow(2).sum()
+
     def forward(self, u, i):
         return self.out(self.features(u, i)).squeeze(-1)
 
@@ -88,6 +92,9 @@ class MLP(nn.Module):
     def features(self, u, i):
         return self.tower(torch.cat([self.user(u), self.item(i)], dim=-1))
 
+    def l2_penalty(self, u, i):
+        return self.user(u).pow(2).sum() + self.item(i).pow(2).sum()
+
     def forward(self, u, i):
         return self.out(self.features(u, i)).squeeze(-1)
 
@@ -110,6 +117,9 @@ class NeuMF(nn.Module):
     def forward(self, u, i):
         h = torch.cat([self.gmf.features(u, i), self.mlp.features(u, i)], dim=-1)
         return self.out(h).squeeze(-1)
+
+    def l2_penalty(self, u, i):
+        return self.gmf.l2_penalty(u, i) + self.mlp.l2_penalty(u, i)
 
     @torch.no_grad()
     def load_pretrained(self, gmf, mlp, alpha=0.5):

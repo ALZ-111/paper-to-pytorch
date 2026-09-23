@@ -14,7 +14,7 @@ Each folder in `papers/` contains a clean, well-commented implementation of a la
 |---|-------|------|-------|--------|
 | 1 | [Attention Is All You Need](papers/attention-is-all-you-need) | 2017 | Transformers | 41.0 BLEU on Multi30k De→En from scratch (own BPE + checkpoint averaging), verified against `nn.Transformer`; KV-cache and batched beam search |
 | 2 | [Auto-Encoding Variational Bayes](papers/auto-encoding-variational-bayes) | 2013 | VAE | log p(x) −97.8 on MNIST matches paper; conv+IWAE variant −90.1; β-VAE and latent-dim sweeps with active-units analysis |
-| 3 | [Neural Collaborative Filtering](papers/neural-collaborative-filtering) | 2017 | RecSys | Matches the paper at 8 factors (NeuMF HR@10 0.683 vs 0.688); does **not** at 64, where GMF beats NeuMF and all models overfit |
+| 3 | [Neural Collaborative Filtering](papers/neural-collaborative-filtering) | 2017 | RecSys | NeuMF HR@10 0.683 vs paper 0.688 at 8 factors; at 64, most of the apparent gap traced to a train/test split disagreement (0.696 vs 0.705 on the authors' own split) |
 
 ---
 

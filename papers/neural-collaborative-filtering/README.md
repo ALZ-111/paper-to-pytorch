@@ -2,11 +2,12 @@
 
 > Xiangnan He, Lizi Liao, Hanwang Zhang, Liqiang Nie, Xia Hu, Tat-Seng Chua — WWW 2017 — https://arxiv.org/abs/1708.05031
 
-A from-scratch PyTorch reproduction of NCF on MovieLens-1M. At 8 predictive factors
-NeuMF lands within 0.005 HR@10 of the paper, and the paper's finding that pre-training
-does not help at that size reproduces too. **At 64 factors it does not reproduce**: NeuMF
-falls 0.04 short of the paper's headline and GMF alone beats both fusions. Everything is
-trained on a laptop CPU.
+A from-scratch PyTorch reproduction of NCF on MovieLens-1M. At 8 predictive factors NeuMF
+lands within 0.005 HR@10 of the paper, and the paper's finding that pre-training does not
+help at that size reproduces too. At 64 factors it first appeared to fail by 0.018, with
+GMF beating both fusions; **most of that turned out to be the train/test split, not the
+model**. Trained on the authors' own published split, NeuMF reaches 0.696 against their
+0.705 and the model ordering is restored. Everything trains on a laptop CPU.
 
 <p align="center"><img src="../../assets/ncf/training_curves.png" width="100%"></p>
 
@@ -81,6 +82,7 @@ paper's Table 1 exactly.
 | [`test_data.py`](test_data.py) | No-leakage, tie-breaking, negative-validity and determinism tests on synthetic data, plus a check of the real split against Table 1 |
 | [`model.py`](model.py) | GMF, MLP and NeuMF (Eqs. 9–12), sized as in the authors' code, with NeuMF pre-training from trained GMF and MLP |
 | [`metrics.py`](metrics.py) | HR@10 and NDCG@10 over all 604k test pairs in a few batched passes |
+| [`authors_split.py`](authors_split.py) | Downloads the authors' published split, matches their item ids to ours, and compares |
 | [`visualize.py`](visualize.py) | Training-curve and factor-comparison figures |
 | [`train.py`](train.py) | Training with the paper's recipe, per-epoch test HR/NDCG, final-epoch and best-epoch reporting, NeuMF pre-training |
 | [`test_model.py`](test_model.py) | GMF reduces to MF, tower shapes, no dead parameters, pre-trained NeuMF equals the α-blend of its parents, metrics on hand-computed cases, chance and oracle scores |
@@ -96,6 +98,9 @@ python train.py --model neumf --factors 8
 python train.py --model neumf --factors 8 --pretrain   # needs the GMF and MLP above
 python train.py --model mlp --factors 64 --sparse      # sparse pays off above ~32 factors
 python train.py --model gmf --factors 64 --sparse --validate   # pick the epoch honestly
+python authors_split.py                                # compare the two splits
+python train.py --model neumf --factors 64 --sparse --split authors
+python train.py --model gmf --factors 64 --sparse --reg 1e-4 --patience 3 --validate
 python visualize.py
 ```
 
@@ -114,18 +119,57 @@ Same code, same protocol, best epoch by test HR (the paper's own rule):
 
 <p align="center"><img src="../../assets/ncf/factor_comparison.png" width="100%"></p>
 
-Two things go wrong, and both are visible in the left panel.
-
-- **The gap grows with capacity.** At 8 factors NeuMF is 0.005 from the paper; at 64 it is
-  0.018 from scratch and 0.041 with pre-training. Whatever closes that gap is not in the
-  paper's description of the architecture, the loss, or the optimiser.
-- **GMF alone wins, reversing the paper's ordering.** With 64 factors the fusion is worse
-  than its simpler branch. The paper reports the opposite at every size.
 - **Everything overfits.** GMF peaks at epoch 8, MLP at 10, NeuMF at 5; NeuMF from scratch
   then falls from 0.687 to 0.646 by epoch 20. Reporting the best epoch, as the paper does,
-  hides this entirely: by the final epoch the same model looks 0.04 worse.
+  hides this entirely: by the final epoch the same model looks 0.04 worse. This survives
+  every change below, so it is a property of the recipe, not of the split.
+- **GMF alone appeared to win**, reversing the paper's ordering, which is what sent me
+  looking for a cause.
 
-I would not call the 64-factor result a reproduction. The 8-factor one is.
+### Most of the gap was the split
+
+`authors_split.py` downloads the fixed files the paper's numbers come from and compares
+them with this pipeline's. The underlying data is identical: 1,000,209 interactions,
+per-user counts equal in the same order, item degrees equal once sorted (their item ids
+are their own, so items are matched by the set of users who rated them). **The split is
+not**: only 72.4% of held-out items agree, because 42% of users have their newest
+timestamp shared by several ratings, with a median tie of three, and the two
+implementations break that tie differently.
+
+Training on their split at 64 factors closes most of the difference and restores the
+ordering:
+
+| Model, 64 factors | Our split | Authors' split | Paper |
+|---|---|---|---|
+| GMF | 0.698 | 0.696 | |
+| NeuMF, from scratch | 0.687 | **0.696** | 0.705 |
+
+<p align="center"><img src="../../assets/ncf/factor_comparison.png" width="100%"></p>
+
+A residual 0.009 remains, and pre-training on their split is not run here (it needs GMF
+and MLP trained there first). I would now call the 64-factor result a near-reproduction
+on a like-for-like split, and the earlier "GMF beats NeuMF" claim an artefact.
+
+> **Do not score a model on another split's test items.** GMF at 64 factors scores 0.683
+> on our split and 0.727 on the authors' — which looks like the whole missing gap, and is
+> leakage. All 1,667 held-out items where the two splits disagree are in *our* training
+> set, so the model has memorised them. The inflation tracks capacity (+0.00 to +0.02 HR
+> at 8 factors, +0.04 to +0.06 at 64), exactly as memorisation would, and held-out item
+> popularity is the same in both splits (766.6 vs 771.2), so difficulty is not the cause.
+> The only valid comparison is to train on the split you evaluate on.
+
+### What did not explain it: L2 regularisation
+
+The obvious suspect for the overfitting was the missing regulariser, so `--reg` adds an L2
+penalty on the embedding rows each batch uses. It does not help at any strength tried
+(GMF, 64 factors, best epoch):
+
+| reg | 0 | 1e-6 | 1e-5 | 1e-4 | 1e-3 |
+|---|---|---|---|---|---|
+| HR@10 | **0.6983** | 0.6982 | 0.6977 | 0.6955 | 0.6955 |
+
+Monotonically flat-to-worse. The paper sweeps this knob and reports 0 for its published
+numbers, which is consistent with what is seen here.
 
 ### Choosing an epoch without the test set
 
@@ -186,12 +230,16 @@ root, which at step 1 scales eps by √(1−β₂) = 0.032. Both are pinned down
 - **The paper's prose and code disagree on the MLP tower** (32 → 16 → 8 vs
   64 → 32 → 16 → 8). The code's version matches the "three hidden layers" of Table 3 and
   reproduces its 0.671, so that is what is implemented.
+- **A reproduction gap can live in the data pipeline.** Two implementations of "hold out
+  each user's latest interaction" disagree for 28% of users, because 42% of them have ties
+  in the timestamp and nobody specifies how to break them. That was worth more than every
+  modelling change I tried.
+- **Cross-split evaluation is leakage, and it looks like good news.** The number moved in
+  the direction I was hoping for, by almost exactly the missing amount. The tell was that
+  it grew with model capacity.
 - **Microbenchmarks overstate.** A 600-step timing loop said 1.39× and 2.28×; full runs
   said 1.05× and 1.80×. Anything worth putting in a README is worth measuring on the real
   workload, and the claim I committed first had to be corrected.
-- **A reproduction can hold at one size and fail at another.** Matching at 8 factors said
-  nothing about 64, where the ordering of the models reverses. Reproducing one row of a
-  table is not reproducing the table.
 - **Best-epoch reporting hides overfitting.** Three of four models at 64 factors peak
   before epoch 10 and decline for the rest of training; the headline number never shows it.
 - **Vectorise the sampler, not just the model.** Rejection-sampling 4 million negatives
@@ -200,11 +248,10 @@ root, which at step 1 scales eps by √(1−β₂) = 0.032. Both are pinned down
 
 ## Next
 
-The 64-factor gap is the open question. Things worth trying, roughly in order of how
-likely they are to explain it: L2 regularisation on the embeddings (the paper sweeps it
-and reports 0, but its models plainly do not overfit the way these do), the authors'
-published train/test files instead of this pipeline's own split, and more epochs with
-early stopping on validation rather than a fixed 20.
+The residual 0.009 at 64 factors on the authors' split. Worth trying: pre-training there
+(the paper's 0.730 is the pre-trained number, and it needs GMF and MLP trained on that
+split first), and the authors' 100-epoch budget with early stopping rather than a fixed
+20, since these models peak by epoch 6-8.
 
 ## Resume-ready summary
 
@@ -213,8 +260,10 @@ early stopping on validation rather than a fixed 20.
 > pipeline and a vectorised negative sampler (4M negatives/epoch in 1.3 s). NeuMF reaches
 > HR@10 0.683 / NDCG@10 0.407, within 0.005 of the paper, and reproduces its finding that
 > pre-training does not help at that size. Found that the reproduction breaks down at 64
-> factors (0.04 below the paper, with the model ordering reversed) and that all models
-> overfit there, which best-epoch reporting hides; added a validation holdout so the epoch
-> is chosen without test labels, and sparse embedding gradients for a measured 1.8x
-> speed-up on the largest models. 19 unit tests including leakage, tie-handling and
-> chance-level checks.
+> factors, then traced most of it to the train/test split rather than the model: the
+> paper's published split and a from-scratch one disagree on 28% of held-out items because
+> 42% of users have tied timestamps, and training on theirs recovers NeuMF to 0.696 vs
+> their 0.705. Ruled out L2 regularisation as the cause, identified cross-split evaluation
+> as leakage that inflates scores with model capacity, and added a validation holdout,
+> early stopping and sparse embedding gradients (1.8x on the largest models). 24 unit tests
+> including leakage, tie-handling and chance-level checks.

@@ -67,22 +67,22 @@ def factor_comparison(results):
     axes[0].set_title("64 factors: every model peaks early, then declines")
     axes[0].legend(fontsize=7); axes[0].grid(alpha=0.3)
 
-    # right: best-epoch HR at 8 vs 64 factors, ours against the paper
-    paper = {"neumf": {8: 0.688, 64: 0.705}, "neumf_pretrain": {8: 0.684, 64: 0.730}}
-    width, xs = 0.35, [0, 1]
-    for ax_i, (key, name) in enumerate([("neumf", "NeuMF"), ("neumf_pretrain", "NeuMF pre-trained")]):
-        ours = []
-        for f in (8, 64):
-            tag = f"neumf_f{f}" + ("_pretrain" if key.endswith("pretrain") else "")
-            ours.append(results[tag]["best_on_test"]["hr"] if tag in results else 0)
-        off = (ax_i - 0.5) * width
-        axes[1].bar([x + off for x in xs], ours, width * 0.9, label=f"{name}, ours")
-        axes[1].plot([x + off for x in xs], [paper[key][f] for f in (8, 64)], "k_",
-                     ms=14, mew=2, label=f"{name}, paper" if ax_i == 0 else None)
-    axes[1].set_xticks(xs); axes[1].set_xticklabels(["8 factors", "64 factors"])
-    axes[1].set_ylim(0.6, 0.76); axes[1].set_ylabel("test HR@10 (best epoch)")
-    axes[1].set_title("Matches the paper at 8 factors, not at 64")
-    axes[1].legend(fontsize=7); axes[1].grid(alpha=0.3, axis="y")
+    # right: NeuMF's best-epoch HR under each split, against the paper
+    bars = [("neumf_f8", "8 factors\nour split", 0.688),
+            ("neumf_f64", "64 factors\nour split", 0.705),
+            ("neumf_f64_authors", "64 factors\nauthors' split", 0.705)]
+    xs = range(len(bars))
+    heights = [results[t]["best_on_test"]["hr"] if t in results else 0 for t, _, _ in bars]
+    axes[1].bar(list(xs), heights, 0.6, color=["C0", "C0", "C2"])
+    for x, (_, _, ref) in zip(xs, bars):
+        axes[1].plot([x - 0.32, x + 0.32], [ref, ref], "k-", lw=2,
+                     label="paper" if x == 0 else None)
+    for x, h in zip(xs, heights):
+        axes[1].text(x, h + 0.002, f"{h:.3f}", ha="center", fontsize=8)
+    axes[1].set_xticks(list(xs)); axes[1].set_xticklabels([lbl for _, lbl, _ in bars], fontsize=8)
+    axes[1].set_ylim(0.6, 0.74); axes[1].set_ylabel("test HR@10 (best epoch)")
+    axes[1].set_title("Most of the 64-factor gap was the split, not the model")
+    axes[1].legend(fontsize=8); axes[1].grid(alpha=0.3, axis="y")
     save_fig(fig, os.path.join(OUT, "factor_comparison.png"))
 
 

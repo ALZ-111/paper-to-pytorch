@@ -17,6 +17,11 @@ epoch's test score but reports two numbers: the final epoch (no selection, what 
 comparison should use) and the best epoch (the paper's protocol, optimistic). Pre-training
 uses the final-epoch GMF and MLP, so no test information leaks into NeuMF.
 
+--patience stops once validation HR has not improved for that many epochs, and makes the
+saved checkpoint the best-validation one rather than the last. Both need --validate: the
+point is to stop without consulting the test set. At 64 factors the models peak by epoch
+5-10, so this saves more than half the training time and saves the right weights.
+
 --validate adds the honest third option: hold out each user's second newest interaction
 as a validation set, choose the epoch by validation HR, and report the test score at that
 epoch. It costs one interaction per user of training data, so its numbers are not
@@ -53,6 +58,27 @@ CKPT_DIR = os.path.join(HERE, "checkpoints")
 RESULTS = os.path.join(HERE, "results.json")
 
 
+class EarlyStopping:
+    """Stop when the monitored score has not improved for `patience` epochs.
+
+    patience=0 disables it. `update` returns True when training should stop; `best_epoch`
+    and `best` track the high-water mark, which is also the checkpoint worth keeping.
+    """
+
+    def __init__(self, patience=0):
+        self.patience = patience
+        self.best = float("-inf")
+        self.best_epoch = 0
+        self.since_best = 0
+
+    def update(self, epoch, score):
+        if score > self.best:
+            self.best, self.best_epoch, self.since_best = score, epoch, 0
+        else:
+            self.since_best += 1
+        return bool(self.patience) and self.since_best >= self.patience
+
+
 def run_tag(model, factors, pretrain=False, suffix="", reg=0.0):
     return (f"{model}_f{factors}" + ("_pretrain" if pretrain else "")
             + (f"_reg{reg:g}" if reg else "") + suffix)
@@ -66,6 +92,8 @@ def load_model(tag, n_users, n_items):
 
 
 def train(args):
+    assert not args.patience or args.validate, "--patience needs --validate: stopping on the "\
+                                               "test set would be selection on test labels"
     seed_everything(args.seed)
     d = load_ml1m(validation=args.validate)
     n_users, n_items = d["n_users"], d["n_items"]
@@ -105,6 +133,8 @@ def train(args):
           f"epoch 0 HR@10 {hr:.4f} NDCG@10 {nd:.4f}", flush=True)
     history = [{"epoch": 0, "hr": hr, "ndcg": nd, "val_hr": v_hr, "loss": None, "seconds": 0.0}]
 
+    stopper = EarlyStopping(args.patience)
+    best_state = None
     t_start = time.time()
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -132,10 +162,21 @@ def train(args):
         print(f"  epoch {epoch:2d} | loss {rec['loss']:.4f} | HR@10 {hr:.4f} | NDCG@10 {nd:.4f}"
               + (f" | val HR {v_hr:.4f}" if v_hr is not None else "")
               + f" | {rec['seconds']:4.0f}s", flush=True)
+        if args.validate:
+            stop = stopper.update(epoch, v_hr)
+            if stopper.best_epoch == epoch:
+                best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            if stop:
+                print(f"  early stop: val HR has not improved since epoch "
+                      f"{stopper.best_epoch}", flush=True)
+                break
 
     best = max(history[1:], key=lambda r: r["hr"])
     final = history[-1]
     chosen = max(history[1:], key=lambda r: r["val_hr"]) if args.validate else None
+    # With a validation set the checkpoint worth keeping is the best one, not the last.
+    if best_state is not None:
+        model.load_state_dict(best_state)
     minutes = (time.time() - t_start) / 60
     print(f"{tag} done in {minutes:.1f} min | final HR {final['hr']:.4f} NDCG {final['ndcg']:.4f} "
           f"| best-on-test (epoch {best['epoch']}) HR {best['hr']:.4f} NDCG {best['ndcg']:.4f}"
@@ -151,6 +192,7 @@ def train(args):
         "best_on_test": {"epoch": best["epoch"], "hr": best["hr"], "ndcg": best["ndcg"]},
         **({"val_selected": {"epoch": chosen["epoch"], "hr": chosen["hr"],
                              "ndcg": chosen["ndcg"], "val_hr": chosen["val_hr"]}} if chosen else {}),
+        "epochs_run": len(history) - 1, "saved_epoch": stopper.best_epoch if best_state else final["epoch"],
         "minutes": minutes, "history": history}})
 
 
@@ -170,6 +212,8 @@ if __name__ == "__main__":
                    help="L2 on the embedding rows used by each batch (0 = the paper's setting)")
     p.add_argument("--tag-suffix", default="", help="distinguish otherwise identical runs")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--patience", type=int, default=0,
+                   help="stop after N epochs without a validation improvement (needs --validate)")
     p.add_argument("--validate", action="store_true",
                    help="hold out a validation interaction per user and pick the epoch with it")
     p.add_argument("--sparse", action="store_true",

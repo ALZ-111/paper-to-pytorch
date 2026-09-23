@@ -213,3 +213,18 @@ def test_l2_penalty_shrinks_the_embeddings_it_penalises():
         opt.step()
     assert 0 < m.user.weight[1].abs().max() < 0.45    # penalised row shrank towards zero
     assert torch.allclose(m.user.weight[0], torch.full((8,), 0.5))   # untouched row did not
+
+
+def test_early_stopping_tracks_the_best_and_fires_after_patience():
+    from train import EarlyStopping
+    s = EarlyStopping(patience=3)
+    assert s.update(1, 0.50) is False and s.best_epoch == 1
+    assert s.update(2, 0.60) is False and s.best_epoch == 2      # improvement resets
+    assert s.update(3, 0.59) is False and s.since_best == 1
+    assert s.update(4, 0.60) is False and s.since_best == 2      # ties are not improvements
+    assert s.update(5, 0.55) is True                             # third epoch without a gain
+    assert s.best == 0.60 and s.best_epoch == 2
+
+    never = EarlyStopping(patience=0)                            # disabled
+    assert [never.update(e, 0.1) for e in range(1, 6)] == [False] * 5
+    assert never.best_epoch == 1

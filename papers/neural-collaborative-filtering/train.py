@@ -95,7 +95,12 @@ def train(args):
     assert not args.patience or args.validate, "--patience needs --validate: stopping on the "\
                                                "test set would be selection on test labels"
     seed_everything(args.seed)
-    d = load_ml1m(validation=args.validate)
+    if args.split == "authors":
+        assert not args.validate, "--validate builds its own split; use --split ours"
+        from authors_split import load_as_split      # imported here to avoid a cycle
+        d = load_as_split()
+    else:
+        d = load_ml1m(validation=args.validate)
     n_users, n_items = d["n_users"], d["n_items"]
     sampler = NegativeSampler(d["train_u"], d["train_i"], n_items)
     rng = np.random.default_rng(args.seed)
@@ -106,7 +111,8 @@ def train(args):
         gmf = load_model(run_tag("gmf", args.factors), n_users, n_items)
         mlp = load_model(run_tag("mlp", args.factors), n_users, n_items)
         model.load_pretrained(gmf, mlp, alpha=args.alpha)
-    tag = run_tag(args.model, args.factors, args.pretrain, args.tag_suffix, args.reg)
+    tag = run_tag(args.model, args.factors, args.pretrain,
+                  ("_authors" if args.split == "authors" else "") + args.tag_suffix, args.reg)
 
     optimizer = args.optimizer or ("sgd" if args.pretrain else "adam")
     # SGD handles sparse gradients directly. Adam does not: it needs SparseAdam for the
@@ -210,6 +216,8 @@ if __name__ == "__main__":
     p.add_argument("--alpha", type=float, default=0.5)
     p.add_argument("--reg", type=float, default=0.0,
                    help="L2 on the embedding rows used by each batch (0 = the paper's setting)")
+    p.add_argument("--split", choices=["ours", "authors"], default="ours",
+                   help="'authors' trains on the published train.rating/test.negative files")
     p.add_argument("--tag-suffix", default="", help="distinguish otherwise identical runs")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--patience", type=int, default=0,

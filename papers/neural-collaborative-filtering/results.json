@@ -2031,5 +2031,27 @@
         "seconds": 30.740115880966187
       }
     ]
+  },
+  "authors_split": {
+    "authors_train_interactions": 994169,
+    "our_train_interactions": 994169,
+    "authors_users": 6040,
+    "authors_max_item_id": 3705,
+    "authors_negatives_per_user": 99,
+    "users_with_identical_item_sets": 0,
+    "id_mappings_agree": false,
+    "same_underlying_interactions": true,
+    "items_with_a_shared_user_set": 45,
+    "test_items_identical": 4373,
+    "test_items_identical_fraction": 0.7240066225165563,
+    "mean_negative_overlap_of_99": 2.787582781456954,
+    "gmf_f64_ours": {
+      "hr": 0.6831125617027283,
+      "ndcg": 0.41050171852111816
+    },
+    "gmf_f64_authors": {
+      "hr": 0.7273178696632385,
+      "ndcg": 0.4607973098754883
+    }
   }
 }

@@ -136,3 +136,37 @@ def test_validation_split_is_disjoint_from_train_and_test():
     # the validation item is not among the test candidates, and vice versa
     assert not (d["val_i"][:, None] == d["test_candidates"]).any()
     assert not (d["test_i"][:, None] == d["val_candidates"]).any()
+
+
+def test_match_items_recovers_a_permutation_of_item_ids():
+    """The authors publish their split with their own contiguous ids. Items are matched
+    by the set of users who rated them, which must survive an arbitrary relabelling."""
+    from authors_split import match_items
+    rng = np.random.default_rng(0)
+    n_users, n_items = 60, 25
+    users, items = [], []
+    for u in range(n_users):
+        for it in rng.choice(n_items, rng.integers(6, 12), replace=False):
+            users.append(u)
+            items.append(it)
+    users, items = np.array(users), np.array(items)
+
+    perm = rng.permutation(n_items)                 # their id -> our id is perm^-1
+    inverse = np.argsort(perm)
+    mapping, ambiguous = match_items(users, items, users, inverse[items], n_items)
+    assert mapping is not None
+    assert np.array_equal(mapping[inverse[items]], items)   # round-trips every interaction
+    # with distinct user sets there is nothing ambiguous, and the map is a bijection
+    if ambiguous == 0:
+        assert sorted(mapping.tolist()) == list(range(n_items))
+
+
+def test_match_items_returns_none_for_different_data():
+    from authors_split import match_items
+    rng = np.random.default_rng(1)
+    n_users, n_items = 40, 12
+    users = np.repeat(np.arange(n_users), 5)
+    items = rng.integers(0, n_items, size=users.size)
+    other = rng.integers(0, n_items, size=users.size)     # unrelated interactions
+    mapping, _ = match_items(users, items, users, other, n_items)
+    assert mapping is None

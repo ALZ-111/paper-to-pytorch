@@ -91,10 +91,10 @@ def match_items(ours_u, ours_i, their_u, their_i, n_items):
     index = defaultdict(list)
     for item, sig in enumerate(by_item(ours_u, ours_i)):
         index[sig].append(item)
-    # A handful of MovieLens items are rated by exactly the same set of users (36 of
-    # 3,706). Those are indistinguishable from the interactions alone, so any consistent
-    # assignment within such a group is a valid bijection; the count is returned so the
-    # caller can say how many test-item comparisons are ambiguous.
+    # A few dozen MovieLens items are rated by exactly the same set of users (45 of
+    # 3,706 at the time of writing, reported as items_with_a_shared_user_set rather than
+    # assumed). Those are indistinguishable from the interactions alone, so any
+    # consistent assignment within such a group is a valid bijection.
     ambiguous = sum(len(v) for v in index.values() if len(v) > 1)
     mapping = np.full(n_items, -1, dtype=np.int64)
     for their_item, sig in enumerate(by_item(their_u, their_i)):

@@ -291,7 +291,7 @@ without careful warmup; it adds one final LayerNorm per stack.
 ```bash
 pip install torch matplotlib requests pytest
 
-python -m pytest test_model.py test_equivalence.py test_bpe.py test_average.py -v   # 21 tests
+python -m pytest -v                                    # 23 tests
 python train.py                                         # toy task, ~40 s on CPU
 python translate.py train                               # Multi30k word-level, ~70 min on CPU
 python translate.py evaluate --beam 4                   # test BLEU, greedy and beam

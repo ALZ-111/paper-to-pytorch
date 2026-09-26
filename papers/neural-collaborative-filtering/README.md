@@ -91,7 +91,7 @@ paper's Table 1 exactly.
 
 ```bash
 python data.py                      # download and build the split (~20 s once)
-python -m pytest -v                 # 15 tests
+python -m pytest -v                 # 25 tests
 python train.py --model gmf --factors 8     # ~9 min on CPU
 python train.py --model mlp --factors 8     # ~16 min
 python train.py --model neumf --factors 8
@@ -265,5 +265,5 @@ split first), and the authors' 100-epoch budget with early stopping rather than 
 > 42% of users have tied timestamps, and training on theirs recovers NeuMF to 0.696 vs
 > their 0.705. Ruled out L2 regularisation as the cause, identified cross-split evaluation
 > as leakage that inflates scores with model capacity, and added a validation holdout,
-> early stopping and sparse embedding gradients (1.8x on the largest models). 24 unit tests
+> early stopping and sparse embedding gradients (1.8x on the largest models). 25 unit tests
 > including leakage, tie-handling and chance-level checks.

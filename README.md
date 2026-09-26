@@ -18,28 +18,37 @@ Each folder in `papers/` contains a clean, well-commented implementation of a la
 
 ---
 
-## Structure
-paper-to-pytorch/
-├── papers/
-│ └── <paper-name>/
-│ ├── README.md # Summary, key ideas, results
-│ ├── model.py # Core architecture
-│ ├── train.py # Training loop
-│ ├── utils.py # Helpers
-│ └── notebook.ipynb # Walkthrough + visualizations
-├── utils/ # Shared utilities across papers
-└── assets/ # Diagrams, figures
+## Layout
 
+```
+paper-to-pytorch/
+├── papers/<paper-name>/
+│   ├── README.md        # the paper's ideas, equations, results against the published numbers
+│   ├── model.py         # the architecture, commented against the paper's sections
+│   ├── train.py         # training with the paper's recipe
+│   ├── test_*.py        # correctness tests: shapes, invariants, leakage, chance levels
+│   ├── visualize.py     # every figure in that README
+│   └── results.json     # per-epoch metrics for each run reported
+├── utils/               # shared across papers: device, seeding, checkpoints, results, plotting
+├── assets/<paper>/      # figures
+└── Makefile             # make test, make figures
+```
+
+Each paper folder is self-contained and run from inside itself (`cd papers/... && python
+train.py`); a two-line `_bootstrap.py` puts the repo root on `sys.path` so `utils` imports
+work. Checkpoints and datasets are git-ignored, so a fresh clone downloads and retrains.
 
 ---
 
-## Setup
+## Running it
 
 ```bash
-git clone https://github.com/ALZ-111/paper-to-pytorch.git
-cd paper-to-pytorch
 pip install -r requirements.txt
+make test        # all 63 tests across the three papers and utils
+make figures     # regenerate the figures that need no trained checkpoint
 ```
+
+Each paper's README has its own training commands and how long they take on a CPU.
 
 ---
 

@@ -84,9 +84,19 @@ def run_tag(model, factors, pretrain=False, suffix="", reg=0.0):
             + (f"_reg{reg:g}" if reg else "") + suffix)
 
 
-def load_model(tag, n_users, n_items):
+def load_model(tag, n_users, n_items, expect_split=None, expect_factors=None):
+    """Load a saved run. `expect_*` guard against picking up an incompatible checkpoint,
+    which matters for pre-training: parents trained on a different split would carry
+    knowledge of items held out by this one."""
     ckpt = load_checkpoint(os.path.join(CKPT_DIR, f"{tag}.pt"))
-    m = build(ckpt["args"]["model"], n_users, n_items, ckpt["args"]["factors"])
+    saved = ckpt["args"]
+    got_split = saved.get("split", "ours")
+    if expect_split is not None and got_split != expect_split:
+        raise ValueError(f"{tag} was trained on the {got_split!r} split, not {expect_split!r}; "
+                         f"pre-training across splits leaks held-out items")
+    if expect_factors is not None and saved["factors"] != expect_factors:
+        raise ValueError(f"{tag} has {saved['factors']} factors, not {expect_factors}")
+    m = build(saved["model"], n_users, n_items, saved["factors"])
     m.load_state_dict(ckpt["model"])
     return m
 
@@ -108,8 +118,12 @@ def train(args):
     model = build(args.model, n_users, n_items, args.factors, sparse=args.sparse)
     if args.pretrain:
         assert args.model == "neumf", "--pretrain applies to NeuMF"
-        gmf = load_model(run_tag("gmf", args.factors), n_users, n_items)
-        mlp = load_model(run_tag("mlp", args.factors), n_users, n_items)
+        # The parents must come from the same split, or NeuMF starts out having seen
+        # items this split holds out.
+        parent_suffix = "_authors" if args.split == "authors" else ""
+        kw = dict(expect_split=args.split, expect_factors=args.factors)
+        gmf = load_model(run_tag("gmf", args.factors, suffix=parent_suffix), n_users, n_items, **kw)
+        mlp = load_model(run_tag("mlp", args.factors, suffix=parent_suffix), n_users, n_items, **kw)
         model.load_pretrained(gmf, mlp, alpha=args.alpha)
     tag = run_tag(args.model, args.factors, args.pretrain,
                   ("_authors" if args.split == "authors" else "") + args.tag_suffix, args.reg)

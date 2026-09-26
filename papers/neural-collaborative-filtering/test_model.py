@@ -2,6 +2,7 @@
 
 import math
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -228,3 +229,30 @@ def test_early_stopping_tracks_the_best_and_fires_after_patience():
     never = EarlyStopping(patience=0)                            # disabled
     assert [never.update(e, 0.1) for e in range(1, 6)] == [False] * 5
     assert never.best_epoch == 1
+
+
+def test_pretraining_refuses_parents_from_another_split(tmp_path, monkeypatch):
+    """--split authors --pretrain used to load the our-split GMF and MLP silently, which
+    hands NeuMF weights that have seen items the authors' split holds out."""
+    import train as T
+    monkeypatch.setattr(T, "CKPT_DIR", str(tmp_path))
+    from utils.checkpoint import save_checkpoint
+
+    gmf = M.build("gmf", U, I, 8)
+    save_checkpoint({"model": gmf.state_dict(), "epoch": 1,
+                     "args": {"model": "gmf", "factors": 8, "split": "ours"}},
+                    str(tmp_path / "gmf_f8.pt"))
+
+    loaded = T.load_model("gmf_f8", U, I, expect_split="ours", expect_factors=8)
+    assert torch.allclose(loaded.out.bias, gmf.out.bias, atol=1e-3)
+
+    with pytest.raises(ValueError, match="leaks"):
+        T.load_model("gmf_f8", U, I, expect_split="authors")
+    with pytest.raises(ValueError, match="factors"):
+        T.load_model("gmf_f8", U, I, expect_factors=64)
+
+    # the tag the authors-split run asks for is a different file, so a missing parent
+    # fails loudly rather than silently falling back to the our-split one
+    assert T.run_tag("gmf", 8, suffix="_authors") == "gmf_f8_authors"
+    with pytest.raises(FileNotFoundError):
+        T.load_model("gmf_f8_authors", U, I)

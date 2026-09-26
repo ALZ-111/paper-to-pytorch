@@ -21,14 +21,5 @@ jobs:
         run: |
           pip install --index-url https://download.pytorch.org/whl/cpu torch
           pip install -r requirements.txt
-      - name: Shared utils
-        run: python -m pytest utils/test_utils.py -v
-      - name: Attention Is All You Need
-        working-directory: papers/attention-is-all-you-need
-        run: python -m pytest test_model.py test_equivalence.py test_bpe.py test_average.py -v
-      - name: Auto-Encoding Variational Bayes
-        working-directory: papers/auto-encoding-variational-bayes
-        run: python -m pytest test_model.py -v
-      - name: Neural Collaborative Filtering
-        working-directory: papers/neural-collaborative-filtering
-        run: python -m pytest -v
+      - name: All test suites
+        run: make test
